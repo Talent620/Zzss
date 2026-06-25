@@ -61,6 +61,7 @@ A lie is caught by WALL 1. An honest-but-dangerous skill is caught by WALL 2.
 cd aegis
 npm run demo          # the four hardware-safety scenarios (src/demo/run.ts)
 npm run demo:market   # the N-dimensional Value Vector auction (src/demo/market.ts)
+npm run demo:keyless  # Authorization as a Verb — credential theft is dead (src/demo/keyless.ts)
 ```
 
 No dependencies are required to run the demo (pure Node ≥ 22.6 with native TS

@@ -9,10 +9,13 @@ import { Jarvis } from "../agent/jarvis.ts";
 import { verify } from "../verifier/verify.ts";
 import type { VerifierKey } from "../verifier/verify.ts";
 import { AndroidGuardBridge } from "../verifier/androidBridge.ts";
+import type { EmitResult } from "../verifier/androidBridge.ts";
 import { selfCorrectionLoop } from "../agent/selfCorrect.ts";
 import { simulate } from "../sim/physics.ts";
 import type { HardwareEnvelope } from "../sim/physics.ts";
-import type { SafetyClaim } from "../core/attest.ts";
+import type { SafetyClaim, AttestationBlock } from "../core/attest.ts";
+import { ContinuousAuthority, SoftwareTeeSigner, proveContext } from "../auth/keyless.ts";
+import type { ExecutionToken } from "../verifier/verify.ts";
 
 function makeVerifierKey(): VerifierKey {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -29,7 +32,25 @@ const CLAIM: SafetyClaim = { invariant: "PEAK_VOLTS_LE", threshold: 13.2 };
 
 const jarvis = new Jarvis("jarvis-core");
 const verifierKey = makeVerifierKey();
-const bridge = new AndroidGuardBridge(verifierKey.publicKeyPem);
+
+// Keyless authorization: the agent has a hardware-bound key (TEE stand-in); the
+// authority stores only its public anchor. Every emit needs a fresh proof.
+const teeKeys = generateKeyPairSync("ed25519");
+const signer = new SoftwareTeeSigner("jarvis-core", teeKeys.privateKey, teeKeys.publicKey.export({ type: "spki", format: "pem" }).toString());
+const authority = new ContinuousAuthority("aegis-bridge-0");
+authority.registerAnchor(signer.publicAnchor());
+let killed = 0;
+const bridge = new AndroidGuardBridge(verifierKey.publicKeyPem, authority, () => { killed++; });
+
+// Helper: do the per-operation challenge -> TEE-sign -> emit dance.
+let clock = 1000;
+function authorizedEmit(block: AttestationBlock, token: ExecutionToken | undefined, env: HardwareEnvelope): EmitResult {
+  const tick = clock++;
+  if (!token) return bridge.emit(block, undefined, env, undefined, tick); // denied physics -> kill path
+  const challenge = bridge.requestChallenge(block, token, signer.subjectId, tick);
+  const response = proveContext(signer, challenge);
+  return bridge.emit(block, token, env, response, tick);
+}
 
 console.log("AEGIS — Zero-Trust Autonomous Evolution");
 console.log(`Rail ${ENV.rail}: hard limit ${ENV.maxVolts} V / ${ENV.maxTempC} C / ${ENV.maxCurrentA} A`);
@@ -42,7 +63,7 @@ hr("SCENARIO A — Bezpieczny skrypt (powinien przejść)");
   const v = verify(block, ENV, verifierKey);
   console.log(`verdict: ${v.code} — ${v.reason}`);
   console.log(`ground-truth peak: ${v.groundTruth?.peakVolts} V (diffBits=${v.diffBits})`);
-  const emit = bridge.emit(block, v.token, ENV);
+  const emit = authorizedEmit(block, v.token, ENV);
   console.log(`android bridge: transmitted=${emit.transmitted} — ${emit.reason}`);
   emit.busFrames.forEach((f) => console.log("   " + f));
 }
@@ -56,7 +77,7 @@ hr("SCENARIO B — Skrypt niebezpieczny, atestacja UCZCIWA (envelope blokuje)");
   console.log(`verdict: ${v.code} — ${v.reason}`);
   console.log(`ground-truth peak: ${v.groundTruth?.peakVolts} V (diffBits=${v.diffBits} → integrity OK)`);
   console.log("⇒ Atestacja jest kryptograficznie idealna, a sprzęt i tak ODMAWIA: fizyka jest niebezpieczna.");
-  const emit = bridge.emit(block, v.token, ENV);
+  const emit = authorizedEmit(block, v.token, ENV);
   console.log(`android bridge: transmitted=${emit.transmitted} — ${emit.reason}`);
 }
 
@@ -72,7 +93,7 @@ hr("SCENARIO C — Halucynacja: kod groźny, atestacja KŁAMIE (sim-divergence b
   console.log(`verdict: ${v.code} — ${v.reason}`);
   console.log(`ground-truth peak: ${v.groundTruth?.peakVolts} V`);
   console.log(`⇒ Symulacja weryfikatora różni się od atestacji o ${v.diffBits} bitów (≠ 0 ⇒ odrzucone).`);
-  const emit = bridge.emit(block, v.token, ENV);
+  const emit = authorizedEmit(block, v.token, ENV);
   console.log(`android bridge: transmitted=${emit.transmitted} — ${emit.reason}`);
 }
 
@@ -87,7 +108,7 @@ hr("SCENARIO D — Pętla samonaprawy (aż atestacja przejdzie)");
   }
   console.log(`self-correction success: ${result.success}`);
   if (result.success) {
-    const emit = bridge.emit(result.finalBlock, result.finalVerdict.token, ENV);
+    const emit = authorizedEmit(result.finalBlock, result.finalVerdict.token, ENV);
     console.log(`android bridge: transmitted=${emit.transmitted} — ${emit.reason}`);
     emit.busFrames.forEach((f) => console.log("   " + f));
   }
