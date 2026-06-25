@@ -17,6 +17,8 @@ import android.media.MediaRecorder
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -64,8 +66,25 @@ class MainActivity : Activity(), SensorEventListener {
     @Volatile private var magX = Float.NaN
     @Volatile private var magY = Float.NaN
     @Volatile private var magZ = Float.NaN
+    @Volatile private var accX = 0f
+    @Volatile private var accY = 0f
+    @Volatile private var accZ = 0f
     private var magBaseline = Float.NaN
     private var sm: SensorManager? = null
+
+    // wall-map live scan
+    private val handler = Handler(Looper.getMainLooper())
+    private val magRing = FloatArray(80)
+    private var magRingIdx = 0
+    private var magRingFill = 0
+    private var liveMag = false
+    private lateinit var liveView: TextView
+    // honey-seal tamper trap
+    private var armed = false
+    private var tripped = false
+    private var baseAcc: FloatArray? = null
+    // RF room watch
+    private var roomBaseline: Set<String>? = null
 
     // follower tracking: hashed BLE addr -> sweeps seen, last RSSI, last time
     private val seen = HashMap<String, IntArray>() // [sweepsSeen, lastRssi]
@@ -75,6 +94,8 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Thread.setDefaultUncaughtExceptionHandler { _, ex -> saveCrash(ex) }
+        try {
         ledgerFile = File(filesDir, "findings.jsonl")
 
         val root = ScrollView(this)
@@ -106,6 +127,27 @@ class MainActivity : Activity(), SensorEventListener {
         col.addView(sub("Detects 18–22 kHz energy you can't hear — used by covert tracking/ad beacons to ping nearby trackers."))
         col.addView(button("LISTEN FOR ULTRASOUND") { ultrasound() })
 
+        col.addView(section("WALL MAP  ·  hidden wiring / cameras"))
+        col.addView(sub("Live magnetic map. Start it and slowly sweep the phone across a wall/object — peaks reveal concealed metal, wiring, motors, magnets."))
+        val wallBtn = button("WALL SCAN ▶ (live)") {}
+        wallBtn.setOnClickListener { try { toggleWall(wallBtn) } catch (e: Exception) { logln("err: ${e.message}", "#e55") } }
+        col.addView(wallBtn)
+        liveView = TextView(this).apply {
+            setTextColor(Color.parseColor("#6cf")); textSize = 13f; typeface = android.graphics.Typeface.MONOSPACE
+            setBackgroundColor(Color.parseColor("#06090d")); setPadding(dp(12), dp(10), dp(12), dp(10)); text = "—"
+        }
+        col.addView(liveView)
+
+        col.addView(section("RF ROOM WATCH  ·  new transmitter alarm"))
+        col.addView(sub("Snapshot a room's radios, leave, come back — it tells you if a NEW transmitter appeared (someone switched on a bug or walked in with a device)."))
+        col.addView(button("SET ROOM BASELINE") { setRoomBaseline() })
+        col.addView(button("CHECK FOR NEW TRANSMITTERS") { checkRoomChange() })
+
+        col.addView(section("HONEY-SEAL  ·  tamper trap"))
+        col.addView(sub("Arm it and leave the phone. If anyone moves or picks it up while you're away, it seals a signed, timestamped tamper record you can prove later."))
+        col.addView(button("ARM HONEY-SEAL") { armSeal() })
+        col.addView(button("CHECK / DISARM") { checkSeal() })
+
         col.addView(section("EVIDENCE LEDGER · TEE"))
         col.addView(button("VERIFY EVIDENCE CHAIN") { verifyChain() })
         col.addView(button("EXPORT findings.json") { exportLedger() })
@@ -120,9 +162,34 @@ class MainActivity : Activity(), SensorEventListener {
         col.addView(log)
         setContentView(root)
 
-        requestPerms(); initKey(); initSensors()
-        status.text = "TEE: " + (if (keyPair != null) (if (strongBox) "StrongBox ✓" else "TEE ✓") else "sw") +
-            "  ·  mag: " + (if (magX.isNaN()) "absent" else "ok")
+        try { initKey() } catch (e: Throwable) { logln("key init: ${e.message}", "#dc6") }
+        try { initSensors() } catch (e: Throwable) { logln("sensors: ${e.message}", "#dc6") }
+        try { requestPerms() } catch (e: Throwable) {}
+        try {
+            status.text = "TEE: " + (if (keyPair != null) (if (strongBox) "StrongBox ✓" else "TEE ✓") else "sw") +
+                "  ·  mag: " + (if (magX.isNaN()) "absent" else "ok")
+        } catch (e: Throwable) {}
+        } catch (fatal: Throwable) {
+            showError(fatal)
+        }
+    }
+
+    private fun showError(e: Throwable) {
+        try {
+            val sw = java.io.StringWriter(); e.printStackTrace(java.io.PrintWriter(sw))
+            val tv = TextView(this).apply {
+                setTextColor(Color.parseColor("#ff6b6b")); textSize = 12f
+                typeface = android.graphics.Typeface.MONOSPACE; setPadding(28, 40, 28, 28)
+                text = "AEGIS — start error (screenshot this and send it):\n\n$sw"
+            }
+            setContentView(ScrollView(this).apply { setBackgroundColor(Color.parseColor("#0b0f14")); addView(tv) })
+        } catch (_: Throwable) {}
+    }
+    private fun saveCrash(ex: Throwable) {
+        try {
+            val sw = java.io.StringWriter(); ex.printStackTrace(java.io.PrintWriter(sw))
+            File(getExternalFilesDir(null), "aegis-crash.txt").writeText(sw.toString())
+        } catch (_: Throwable) {}
     }
 
     // ── permissions / sensors ────────────────────────────────────────────────
@@ -133,13 +200,18 @@ class MainActivity : Activity(), SensorEventListener {
     }
     private fun initSensors() {
         sm = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        sm?.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)?.let { sm?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+        sm?.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)?.let { sm?.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sm?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
     }
     override fun onDestroy() { super.onDestroy(); try { sm?.unregisterListener(this) } catch (_: Exception) {} }
     override fun onAccuracyChanged(s: Sensor?, a: Int) {}
     override fun onSensorChanged(e: SensorEvent) {
-        if (e.sensor.type == Sensor.TYPE_MAGNETIC_FIELD) { magX = e.values[0]; magY = e.values[1]; magZ = e.values[2] }
+        when (e.sensor.type) {
+            Sensor.TYPE_MAGNETIC_FIELD -> { magX = e.values[0]; magY = e.values[1]; magZ = e.values[2]; pushMag() }
+            Sensor.TYPE_ACCELEROMETER -> { accX = e.values[0]; accY = e.values[1]; accZ = e.values[2] }
+        }
     }
+    private fun pushMag() { val m = magMag(); if (!m.isNaN()) { magRing[magRingIdx] = m; magRingIdx = (magRingIdx + 1) % magRing.size; if (magRingFill < magRing.size) magRingFill++ } }
     private fun magMag(): Float = if (magX.isNaN()) Float.NaN else sqrt(magX * magX + magY * magY + magZ * magZ)
 
     // ── RF SWEEP ─────────────────────────────────────────────────────────────
@@ -294,6 +366,97 @@ class MainActivity : Activity(), SensorEventListener {
             }
             len = len shl 1
         }
+    }
+
+    // ── WALL MAP (live magnetic sweep) ───────────────────────────────────────
+    private val liveRunnable = object : Runnable {
+        override fun run() {
+            if (!liveMag) return
+            liveView.text = sparkline() + "\n${fmt(magMag())} µT   peak ${fmt(ringPeak())} µT   (sweep slowly; peaks = metal/wiring/camera)"
+            handler.postDelayed(this, 160)
+        }
+    }
+    private fun toggleWall(b: Button) {
+        liveMag = !liveMag
+        if (liveMag) { b.text = "WALL SCAN ◼ (stop)"; magRingFill = 0; magRingIdx = 0; handler.post(liveRunnable) }
+        else { b.text = "WALL SCAN ▶ (live)"; liveView.text = "—" }
+    }
+    private fun sparkline(): String {
+        if (magRingFill == 0) return "........"
+        val n = magRingFill
+        val vals = FloatArray(n) { magRing[(magRingIdx - n + it + magRing.size) % magRing.size] }
+        val mn = vals.minOrNull() ?: 0f; val mx = vals.maxOrNull() ?: 1f
+        val chars = " .:-=+*#%@"
+        val sb = StringBuilder()
+        for (v in vals) { val t = if (mx - mn < 0.001f) 0 else ((v - mn) / (mx - mn) * (chars.length - 1)).toInt(); sb.append(chars[t.coerceIn(0, chars.length - 1)]) }
+        return sb.toString()
+    }
+    private fun ringPeak(): Float {
+        if (magRingFill == 0) return Float.NaN
+        var mx = -1f; for (i in 0 until magRingFill) if (magRing[i] > mx) mx = magRing[i]; return mx
+    }
+
+    // ── RF ROOM WATCH ────────────────────────────────────────────────────────
+    private fun setRoomBaseline() {
+        logln("# capturing room RF baseline…", "#9ad")
+        Thread { val ids = scanIds(); roomBaseline = ids; runOnUiThread { logln("# baseline: ${ids.size} transmitters in this room", "#6c6") } }.start()
+    }
+    private fun checkRoomChange() {
+        val base = roomBaseline
+        if (base == null) { logln("set a room baseline first", "#dc6"); return }
+        logln("# re-scanning room…", "#9ad")
+        Thread {
+            val now = scanIds(); val added = now - base
+            runOnUiThread {
+                if (added.isEmpty()) logln("# room unchanged ✓  no new transmitters", "#6c6")
+                else { logln("# ${added.size} NEW transmitter(s) appeared ⚠", "#e55"); added.take(8).forEach { logln("  + id=$it", "#e55") } }
+            }
+            if (added.isNotEmpty()) seal("RF_CHANGE", "new=${added.size}")
+        }.start()
+    }
+    private fun scanIds(): Set<String> {
+        val out = HashSet<String>()
+        try {
+            if (Build.VERSION.SDK_INT < 31 || checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED) {
+                val mgr = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+                val scanner = mgr.adapter?.bluetoothLeScanner
+                if (scanner != null) {
+                    val cb = object : ScanCallback() { override fun onScanResult(t: Int, r: ScanResult) { out.add("b:" + h8(r.device.address)) } }
+                    scanner.startScan(cb); Thread.sleep(2200); scanner.stopScan(cb)
+                }
+            }
+        } catch (_: Exception) {}
+        try {
+            if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                @Suppress("DEPRECATION") for (r in wm.scanResults) out.add("w:" + h8(r.BSSID ?: continue))
+            }
+        } catch (_: Exception) {}
+        return out
+    }
+
+    // ── HONEY-SEAL (tamper trap) ─────────────────────────────────────────────
+    private val armRunnable = object : Runnable {
+        override fun run() {
+            if (!armed) return
+            val d = accDelta()
+            if (d > 2.5f && !tripped) {
+                tripped = true; seal("TAMPER", "delta=${fmt(d)}")
+                runOnUiThread { logln("⚠ TAMPER — phone moved while armed (Δ=${fmt(d)} m/s²)", "#e55"); toast("TAMPER detected!") }
+            }
+            handler.postDelayed(this, 350)
+        }
+    }
+    private fun accDelta(): Float { val b = baseAcc ?: return 0f; val dx = accX - b[0]; val dy = accY - b[1]; val dz = accZ - b[2]; return sqrt(dx * dx + dy * dy + dz * dz) }
+    private fun armSeal() {
+        baseAcc = floatArrayOf(accX, accY, accZ); armed = true; tripped = false
+        handler.post(armRunnable)
+        logln("# HONEY-SEAL armed — leave the phone still. It records (signed) the instant it's touched.", "#9ad")
+        toast("Armed — don't move the phone")
+    }
+    private fun checkSeal() {
+        armed = false; handler.removeCallbacks(armRunnable)
+        logln("# HONEY-SEAL ${if (tripped) "TRIPPED ⚠ — it was moved while you were away" else "intact ✓ — untouched"}", if (tripped) "#e55" else "#6c6")
     }
 
     // ── evidence ledger (hash-chained, TEE-signed) ───────────────────────────
