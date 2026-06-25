@@ -62,6 +62,7 @@ cd aegis
 npm run demo          # the four hardware-safety scenarios (src/demo/run.ts)
 npm run demo:market   # the N-dimensional Value Vector auction (src/demo/market.ts)
 npm run demo:keyless  # Authorization as a Verb — credential theft is dead (src/demo/keyless.ts)
+npm run demo:witness  # The Witness Protocol — interception/replay is dead (src/demo/witness.ts)
 ```
 
 No dependencies are required to run the demo (pure Node ≥ 22.6 with native TS

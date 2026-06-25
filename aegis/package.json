@@ -8,6 +8,7 @@
     "demo": "node --experimental-strip-types src/demo/run.ts",
     "demo:market": "node --experimental-strip-types src/demo/market.ts",
     "demo:keyless": "node --experimental-strip-types src/demo/keyless.ts",
+    "demo:witness": "node --experimental-strip-types src/demo/witness.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

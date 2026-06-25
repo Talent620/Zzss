@@ -84,8 +84,10 @@ export interface AuthResult {
 export interface TeeSigner {
   subjectId: string;
   publicAnchor(): PublicAnchor;
-  /** Sign a per-operation challenge. The ONLY thing the key ever does. */
+  /** Sign a per-operation challenge (proves live key possession for one op). */
   signOperationProof(challenge: Challenge): string;
+  /** Sign an arbitrary structured fact with the hardware key (e.g. a witness proof). */
+  signMessage(message: string): string;
 }
 
 export class SoftwareTeeSigner implements TeeSigner {
@@ -103,8 +105,12 @@ export class SoftwareTeeSigner implements TeeSigner {
     return { subjectId: this.subjectId, publicKeyPem: this.publicKeyPem };
   }
 
+  signMessage(message: string): string {
+    return sign(null, Buffer.from(message), this.privateKey).toString("hex");
+  }
+
   signOperationProof(challenge: Challenge): string {
-    return sign(null, Buffer.from(canonicalize(challenge)), this.privateKey).toString("hex");
+    return this.signMessage(canonicalize(challenge));
   }
 }
 
