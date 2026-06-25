@@ -11,6 +11,9 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
@@ -32,27 +35,25 @@ import java.security.SecureRandom
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
 import kotlin.math.abs
-import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
- * AEGIS · REALITY SEAL — a primitive that does not exist anywhere.
+ * AEGIS DETECTOR — a counter-surveillance "tricorder" for a stock phone.
  *
- * Instead of COPYING signals (a Flipper), the phone WEAVES the uncontrollable
- * ambient physics of a place+moment — geomagnetic field, barometric pressure,
- * ambient light, the BLE/Wi-Fi neighbourhood — into one fused "reality
- * fingerprint", signs it in the hardware secure element (TEE/StrongBox), and
- * mints a RealitySeal: an un-forgeable, un-replayable proof that THIS device was
- * in THIS micro-environment at THIS instant.
+ * Defensive only: it never tracks or eavesdrops on anyone. It reveals what is
+ * watching YOU — hidden trackers, rogue transmitters, concealed electronics,
+ * even inaudible ultrasonic beacons — and seals each finding in the TEE so it is
+ * court-grade evidence, not a guess.
  *
- * From that primitive: the room becomes the password (Place-Lock), and two seals
- * yield a co-presence distance (same place? same moment?) — with no GPS and no
- * server. GPS can be spoofed; the magnetic + RF + barometric texture of one exact
- * spot cannot be reproduced remotely.
+ *  • RF SWEEP          BLE + Wi-Fi census, identifies tracker brands by company id
+ *  • FOLLOWER DETECTOR which BLE devices persist near you across sweeps/time
+ *  • EMF / HIDDEN-ELX  magnetometer field meter + anomaly (cameras, mics, magnets)
+ *  • ULTRASOUND        mic + FFT, detects 18–22 kHz tracking/ad beacons
+ *  • EVIDENCE LEDGER   every finding hash-chained + TEE-signed + exportable
  */
 class MainActivity : Activity(), SensorEventListener {
 
-    private val ALIAS = "aegis-sentinel-tee"
+    private val ALIAS = "aegis-detector-tee"
     private val rng = SecureRandom()
     private var keyPair: KeyPair? = null
     private var strongBox = false
@@ -60,36 +61,21 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var status: TextView
     private lateinit var ledgerFile: File
 
-    // live sensor snapshots (NaN = sensor absent / not yet reported)
     @Volatile private var magX = Float.NaN
     @Volatile private var magY = Float.NaN
     @Volatile private var magZ = Float.NaN
-    @Volatile private var lightLx = Float.NaN
-    @Volatile private var pressHpa = Float.NaN
+    private var magBaseline = Float.NaN
     private var sm: SensorManager? = null
 
-    private var lastSeal: Seal? = null
-    private var trustedSeal: Seal? = null
+    // follower tracking: hashed BLE addr -> sweeps seen, last RSSI, last time
+    private val seen = HashMap<String, IntArray>() // [sweepsSeen, lastRssi]
+    private var sweepIdx = 0
     private var head = "GENESIS"
     private var seq = 0
 
-    // ── a fused reality fingerprint ──────────────────────────────────────────
-    class Seal(
-        val ts: Long,
-        val mag: FloatArray,   // x,y,z µT (may contain NaN)
-        val magMag: Float,
-        val light: Float,
-        val pressure: Float,
-        val wifi: Set<String>, // hashed BSSIDs
-        val ble: Set<String>,  // hashed device addresses
-        val nonce: String,
-        var sealHash: String = "",
-        var sig: String = ""
-    )
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        ledgerFile = File(filesDir, "seals.jsonl")
+        ledgerFile = File(filesDir, "findings.jsonl")
 
         val root = ScrollView(this)
         val col = LinearLayout(this).apply {
@@ -99,24 +85,30 @@ class MainActivity : Activity(), SensorEventListener {
         }
         root.addView(col)
 
-        col.addView(title("REALITY  SEAL"))
-        col.addView(sub("The phone doesn't copy signals — it mints reality. A TEE-signed proof of here-and-now, woven from physics no one can forge remotely."))
+        col.addView(title("AEGIS  DETECTOR"))
+        col.addView(sub("A counter-surveillance tricorder. It reveals what is watching you — and signs the proof in hardware. It never tracks anyone."))
         status = sub("init…"); col.addView(status)
 
-        col.addView(section("MINT"))
-        col.addView(sub("Capture the magnetic + barometric + light + BLE/Wi-Fi texture of this exact spot and seal it in hardware."))
-        col.addView(button("CAPTURE REALITY SEAL") { capture { s -> onSealed(s) } })
-        col.addView(button("COMPARE TO LAST SEAL") { compareLast() })
+        col.addView(section("RF SWEEP  ·  trackers & rogue radios"))
+        col.addView(sub("Scans BLE + Wi-Fi and names likely trackers (AirTag / SmartTag / Tile) and suspiciously close unnamed devices."))
+        col.addView(button("RUN RF SWEEP") { rfSweep() })
 
-        col.addView(section("PLACE-LOCK  (the room is the password)"))
-        col.addView(sub("Save this spot as the trusted scene, then test from here vs another room. Stable channels only (magnetic + Wi-Fi + pressure)."))
-        col.addView(button("SET TRUSTED SCENE") { setTrusted() })
-        col.addView(button("TEST UNLOCK (am I in the trusted place?)") { testUnlock() })
+        col.addView(section("FOLLOWER DETECTOR  ·  is something on you?"))
+        col.addView(sub("Run several sweeps over a few minutes (move around). Devices that keep reappearing near you are flagged as possible planted trackers."))
+        col.addView(button("ANALYZE FOLLOWERS") { followers() })
 
-        col.addView(section("LEDGER · TEE"))
-        col.addView(button("SHOW TEE PUBLIC KEY") { showKey() })
-        col.addView(button("VERIFY SEAL CHAIN") { verifyChain() })
-        col.addView(button("EXPORT seals.json") { exportLedger() })
+        col.addView(section("EMF · HIDDEN ELECTRONICS"))
+        col.addView(sub("Magnetic-field meter. Cameras, mics, speakers, motors and magnets disturb the field. Calibrate in open air, then sweep near objects."))
+        col.addView(button("CALIBRATE BASELINE") { magBaseline = magMag(); logln("# baseline = ${fmt(magBaseline)} µT", "#9ad") })
+        col.addView(button("EMF SCAN (point at object)") { emfScan() })
+
+        col.addView(section("ULTRASOUND LISTENER  ·  inaudible beacons"))
+        col.addView(sub("Detects 18–22 kHz energy you can't hear — used by covert tracking/ad beacons to ping nearby trackers."))
+        col.addView(button("LISTEN FOR ULTRASOUND") { ultrasound() })
+
+        col.addView(section("EVIDENCE LEDGER · TEE"))
+        col.addView(button("VERIFY EVIDENCE CHAIN") { verifyChain() })
+        col.addView(button("EXPORT findings.json") { exportLedger() })
 
         col.addView(section("LOG"))
         log = TextView(this).apply {
@@ -128,236 +120,228 @@ class MainActivity : Activity(), SensorEventListener {
         col.addView(log)
         setContentView(root)
 
-        requestPerms()
-        initKey()
-        initSensors()
+        requestPerms(); initKey(); initSensors()
         status.text = "TEE: " + (if (keyPair != null) (if (strongBox) "StrongBox ✓" else "TEE ✓") else "sw") +
-            "  ·  sensors: " + sensorSummary()
+            "  ·  mag: " + (if (magX.isNaN()) "absent" else "ok")
     }
 
     // ── permissions / sensors ────────────────────────────────────────────────
     private fun requestPerms() {
-        val p = mutableListOf(android.Manifest.permission.ACCESS_FINE_LOCATION)
-        if (Build.VERSION.SDK_INT >= 31) {
-            p.add(android.Manifest.permission.BLUETOOTH_SCAN)
-            p.add(android.Manifest.permission.BLUETOOTH_CONNECT)
-        }
+        val p = mutableListOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 31) { p.add(android.Manifest.permission.BLUETOOTH_SCAN); p.add(android.Manifest.permission.BLUETOOTH_CONNECT) }
         try { requestPermissions(p.toTypedArray(), 7) } catch (_: Exception) {}
     }
-
     private fun initSensors() {
         sm = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        reg(Sensor.TYPE_MAGNETIC_FIELD); reg(Sensor.TYPE_LIGHT); reg(Sensor.TYPE_PRESSURE)
+        sm?.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)?.let { sm?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
     }
-    private fun reg(type: Int) { sm?.getDefaultSensor(type)?.let { sm?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) } }
     override fun onDestroy() { super.onDestroy(); try { sm?.unregisterListener(this) } catch (_: Exception) {} }
     override fun onAccuracyChanged(s: Sensor?, a: Int) {}
     override fun onSensorChanged(e: SensorEvent) {
-        when (e.sensor.type) {
-            Sensor.TYPE_MAGNETIC_FIELD -> { magX = e.values[0]; magY = e.values[1]; magZ = e.values[2] }
-            Sensor.TYPE_LIGHT -> lightLx = e.values[0]
-            Sensor.TYPE_PRESSURE -> pressHpa = e.values[0]
-        }
+        if (e.sensor.type == Sensor.TYPE_MAGNETIC_FIELD) { magX = e.values[0]; magY = e.values[1]; magZ = e.values[2] }
     }
-    private fun sensorSummary(): String {
-        val l = ArrayList<String>()
-        if (!magX.isNaN()) l.add("mag"); if (!lightLx.isNaN()) l.add("light"); if (!pressHpa.isNaN()) l.add("baro")
-        return if (l.isEmpty()) "none" else l.joinToString("+")
-    }
+    private fun magMag(): Float = if (magX.isNaN()) Float.NaN else sqrt(magX * magX + magY * magY + magZ * magZ)
 
-    // ── capture: scan BLE + Wi-Fi, snapshot sensors, fuse + TEE-sign ─────────
-    private fun capture(done: (Seal) -> Unit) {
-        logln("# scanning the environment…", "#9ad")
+    // ── RF SWEEP ─────────────────────────────────────────────────────────────
+    private fun rfSweep() {
+        logln("# RF SWEEP scanning…", "#9ad")
         Thread {
-            val ble = scanBle()
-            val wifi = scanWifi()
-            val mag = floatArrayOf(magX, magY, magZ)
-            val magMag = if (mag.any { it.isNaN() }) Float.NaN else sqrt(mag[0] * mag[0] + mag[1] * mag[1] + mag[2] * mag[2])
-            val nonce = randomHex(16)
-            val s = Seal(System.currentTimeMillis(), mag, magMag, lightLx, pressHpa, wifi, ble, nonce)
-            sealAndChain(s)
-            runOnUiThread { done(s) }
+            val found = ArrayList<String>()
+            val flags = ArrayList<String>()
+            try {
+                if (Build.VERSION.SDK_INT < 31 || checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED) {
+                    val mgr = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+                    val scanner = mgr.adapter?.bluetoothLeScanner
+                    if (scanner != null) {
+                        sweepIdx += 1
+                        val hits = HashMap<String, ScanResult>()
+                        val cb = object : ScanCallback() { override fun onScanResult(t: Int, r: ScanResult) { hits[r.device.address] = r } }
+                        scanner.startScan(cb); Thread.sleep(2500); scanner.stopScan(cb)
+                        for ((addr, r) in hits) {
+                            val h = h8(addr); val a = seen.getOrPut(h) { intArrayOf(0, -127) }
+                            a[0] = a[0] + 1; a[1] = r.rssi
+                            val label = classify(r)
+                            if (label != null) flags.add("⚠ $label  rssi=${r.rssi}dBm (${near(r.rssi)})  id=$h")
+                        }
+                        found.add("BLE devices: ${hits.size}")
+                    }
+                }
+            } catch (_: Exception) {}
+            try {
+                if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                    val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                    @Suppress("DEPRECATION") val aps = wm.scanResults
+                    val hidden = aps.count { it.SSID.isNullOrBlank() }
+                    found.add("Wi-Fi APs: ${aps.size} (${hidden} hidden)")
+                }
+            } catch (_: Exception) {}
+            seal("RF_SWEEP", (found + flags).joinToString(" | "))
+            runOnUiThread {
+                logln("# RF SWEEP #$sweepIdx  ${found.joinToString(" · ")}", "#6c6")
+                if (flags.isEmpty()) logln("  no known trackers in range", "#9fd")
+                else flags.forEach { logln("  $it", "#e55") }
+            }
         }.start()
     }
 
-    private fun scanBle(): Set<String> {
-        val out = HashSet<String>()
-        try {
-            if (Build.VERSION.SDK_INT >= 31 &&
-                checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) return out
-            val mgr = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-            val scanner = mgr.adapter?.bluetoothLeScanner ?: return out
-            val cb = object : ScanCallback() {
-                override fun onScanResult(t: Int, r: ScanResult) { out.add(h8(r.device.address)) }
+    /** Identify likely trackers by BLE manufacturer company id / service UUID. */
+    private fun classify(r: ScanResult): String? {
+        val sr = r.scanRecord ?: return strongUnnamed(r)
+        val msd = sr.manufacturerSpecificData
+        if (msd != null) {
+            for (i in 0 until msd.size()) {
+                when (msd.keyAt(i)) {
+                    0x004C -> return "Apple FindMy / AirTag"
+                    0x0075 -> return "Samsung SmartTag"
+                    0x00E0 -> return "Google FindMy tag"
+                    0x0157 -> return "Tile tracker"
+                }
             }
-            scanner.startScan(cb)
-            Thread.sleep(1300)
-            scanner.stopScan(cb)
-        } catch (_: Exception) {}
-        return out
+        }
+        val uuids = sr.serviceUuids
+        if (uuids != null) for (u in uuids) {
+            val s = u.uuid.toString().lowercase()
+            if (s.contains("feed") || s.contains("feec")) return "Tile tracker"
+            if (s.contains("fd5a")) return "Chipolo tracker"
+        }
+        return strongUnnamed(r)
+    }
+    private fun strongUnnamed(r: ScanResult): String? {
+        val name = r.scanRecord?.deviceName
+        return if ((name == null || name.isBlank()) && r.rssi > -55) "Unknown VERY close device" else null
+    }
+    private fun near(rssi: Int) = when { rssi > -50 -> "touching"; rssi > -65 -> "very close"; rssi > -80 -> "near"; else -> "far" }
+
+    // ── FOLLOWER DETECTOR ────────────────────────────────────────────────────
+    private fun followers() {
+        if (sweepIdx < 2) { logln("run RF SWEEP at least 2–3× (move around) first", "#dc6"); return }
+        val persistent = seen.entries.filter { it.value[0] >= 3 }.sortedByDescending { it.value[0] }
+        logln("# FOLLOWER ANALYSIS  (${sweepIdx} sweeps)", "#9ad")
+        if (persistent.isEmpty()) { logln("  nothing is consistently following you ✓", "#6c6"); return }
+        for (e in persistent.take(8)) {
+            val strong = e.value[1] > -70
+            logln("  ${if (strong) "⚠ FOLLOWING" else "·"} id=${e.key}  seen ${e.value[0]}/${sweepIdx} sweeps  rssi=${e.value[1]}dBm", if (strong) "#e55" else "#9fd")
+        }
+        seal("FOLLOWER", "persistent=${persistent.size}")
     }
 
-    private fun scanWifi(): Set<String> {
-        val out = HashSet<String>()
-        try {
-            if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return out
-            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            @Suppress("DEPRECATION")
-            for (r in wm.scanResults) out.add(h8(r.BSSID ?: continue))
-        } catch (_: Exception) {}
-        return out
+    // ── EMF / hidden electronics ─────────────────────────────────────────────
+    private fun emfScan() {
+        val m = magMag()
+        if (m.isNaN()) { logln("no magnetometer", "#dc6"); return }
+        val base = if (magBaseline.isNaN()) 45f else magBaseline // ~Earth field default
+        val delta = abs(m - base)
+        val level = when { delta > 80 -> "STRONG ANOMALY — concealed magnet/motor?"; delta > 30 -> "anomaly — electronics nearby"; delta > 12 -> "slight disturbance"; else -> "clean" }
+        logln("# EMF  ${fmt(m)} µT  (Δ ${fmt(delta)} vs ${fmt(base)})  -> $level", if (delta > 30) "#e55" else "#6c6")
+        if (delta > 12) seal("EMF", "mag=${fmt(m)} delta=${fmt(delta)}")
     }
 
-    private fun sealAndChain(s: Seal) {
-        val body = canonical(s)
-        s.sealHash = sha256hex(head + "|" + body)
-        s.sig = teeSign(s.sealHash)
-        head = s.sealHash
-        val rec = "{\"entry\":$body,\"sealHash\":\"${s.sealHash}\",\"sig\":\"${s.sig}\",\"seq\":$seq}"
-        try { ledgerFile.appendText(rec + "\n") } catch (_: Exception) {}
+    // ── ULTRASOUND beacon detector (mic + FFT) ───────────────────────────────
+    private fun ultrasound() {
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            logln("grant microphone permission, then retry", "#dc6"); requestPerms(); return
+        }
+        logln("# listening for inaudible 18–22 kHz…", "#9ad")
+        Thread {
+            try {
+                val rate = 44100; val N = 4096
+                val minBuf = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                val rec = AudioRecord(MediaRecorder.AudioSource.MIC, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, N * 4))
+                rec.startRecording()
+                val buf = ShortArray(N); var off = 0
+                while (off < N) { val r = rec.read(buf, off, N - off); if (r <= 0) break; off += r }
+                rec.stop(); rec.release()
+                val re = DoubleArray(N); val im = DoubleArray(N)
+                for (i in 0 until N) { val w = 0.5 - 0.5 * Math.cos(2.0 * Math.PI * i / (N - 1)); re[i] = buf[i] * w; im[i] = 0.0 }
+                fft(re, im)
+                var total = 0.0; var ultra = 0.0
+                val loBin = 18000 * N / rate; val hiBin = 22000 * N / rate
+                for (i in 2 until N / 2) { val p = re[i] * re[i] + im[i] * im[i]; total += p; if (i in loBin..hiBin) ultra += p }
+                val ratio = if (total <= 0) 0.0 else ultra / total
+                val present = ratio > 0.04 && total > 1e6
+                runOnUiThread {
+                    logln("# ULTRASOUND  ultrasonic share=${(ratio * 100).toInt()}%  -> ${if (present) "BEACON DETECTED ⚠" else "clear ✓"}", if (present) "#e55" else "#6c6")
+                }
+                if (present) seal("ULTRASOUND", "ratio=${"%.3f".format(ratio)}")
+            } catch (e: Exception) { runOnUiThread { logln("audio error: ${e.message}", "#e55") } }
+        }.start()
+    }
+
+    /** in-place iterative radix-2 Cooley–Tukey FFT */
+    private fun fft(re: DoubleArray, im: DoubleArray) {
+        val n = re.size; var j = 0
+        for (i in 1 until n) {
+            var bit = n shr 1
+            while (j and bit != 0) { j = j xor bit; bit = bit shr 1 }
+            j = j or bit
+            if (i < j) { var t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t }
+        }
+        var len = 2
+        while (len <= n) {
+            val ang = -2.0 * Math.PI / len; val wr = Math.cos(ang); val wi = Math.sin(ang)
+            var i = 0
+            while (i < n) {
+                var cwr = 1.0; var cwi = 0.0
+                for (k in 0 until len / 2) {
+                    val ar = re[i + k]; val ai = im[i + k]
+                    val br = re[i + k + len / 2] * cwr - im[i + k + len / 2] * cwi
+                    val bi = re[i + k + len / 2] * cwi + im[i + k + len / 2] * cwr
+                    re[i + k] = ar + br; im[i + k] = ai + bi
+                    re[i + k + len / 2] = ar - br; im[i + k + len / 2] = ai - bi
+                    val ncwr = cwr * wr - cwi * wi; cwi = cwr * wi + cwi * wr; cwr = ncwr
+                }
+                i += len
+            }
+            len = len shl 1
+        }
+    }
+
+    // ── evidence ledger (hash-chained, TEE-signed) ───────────────────────────
+    private fun seal(kind: String, detail: String) {
+        val body = "{\"seq\":$seq,\"kind\":\"$kind\",\"detail\":\"${detail.replace("\"", "'")}\",\"ts\":${System.currentTimeMillis()},\"prev\":\"$head\"}"
+        val hash = sha256hex(head + "|" + body); val sig = teeSign(hash); head = hash
+        try { ledgerFile.appendText("{\"entry\":$body,\"hash\":\"$hash\",\"sig\":\"$sig\"}\n") } catch (_: Exception) {}
         seq += 1
     }
-
-    private fun canonical(s: Seal): String {
-        fun f(x: Float) = if (x.isNaN()) "null" else "%.3f".format(x)
-        return "{" +
-            "\"ts\":${s.ts},\"mag\":[${f(s.mag[0])},${f(s.mag[1])},${f(s.mag[2])}]," +
-            "\"magMag\":${f(s.magMag)},\"light\":${f(s.light)},\"pressure\":${f(s.pressure)}," +
-            "\"wifi\":[${s.wifi.sorted().joinToString(","){"\"$it\""}}]," +
-            "\"ble\":[${s.ble.sorted().joinToString(","){"\"$it\""}}]," +
-            "\"nonce\":\"${s.nonce}\",\"key\":\"${pubB64().take(24)}\"}"
-    }
-
-    private fun onSealed(s: Seal) {
-        lastSeal = s
-        logln("# SEAL minted  seq=${seq - 1}", "#6c6")
-        logln("  mag=${fmt(s.magMag)}µT  baro=${fmt(s.pressure)}hPa  light=${fmt(s.light)}lx", "#9fd")
-        logln("  wifi=${s.wifi.size} aps · ble=${s.ble.size} dev · sig=${s.sig.take(18)}…", "#9fd")
-        toast("Reality sealed in TEE")
-    }
-
-    // ── co-presence comparison ───────────────────────────────────────────────
-    /** Returns Pair(percent 0..100, breakdown). stableOnly weights mag+wifi+pressure. */
-    private fun similarity(a: Seal, b: Seal, stableOnly: Boolean): Pair<Int, String> {
-        var wsum = 0.0; var acc = 0.0; val parts = ArrayList<String>()
-        fun add(name: String, sim: Double, w: Double) { acc += sim * w; wsum += w; parts.add("$name ${(sim * 100).toInt()}%") }
-
-        if (!a.magMag.isNaN() && !b.magMag.isNaN()) {
-            val cos = cosine(a.mag, b.mag)
-            val magClose = 1.0 - min(1.0, abs(a.magMag - b.magMag) / 25.0) // 25µT tolerance
-            add("mag", 0.5 * (cos.coerceIn(0.0, 1.0)) + 0.5 * magClose, 3.0)
+    private fun verifyChain() {
+        if (!ledgerFile.exists()) { logln("no findings yet", "#dc6"); return }
+        var prev = "GENESIS"; var ok = true; var n = 0
+        ledgerFile.forEachLine { ln -> if (ln.isBlank()) return@forEachLine; n++
+            val body = ln.substringAfter("\"entry\":").substringBeforeLast(",\"hash\"")
+            val claimed = ln.substringAfter("\"hash\":\"").substringBefore("\"")
+            if (sha256hex(prev + "|" + body) != claimed) ok = false; prev = claimed
         }
-        val wj = jaccard(a.wifi, b.wifi); if (a.wifi.isNotEmpty() || b.wifi.isNotEmpty()) add("wifi", wj, 3.0)
-        if (!a.pressure.isNaN() && !b.pressure.isNaN()) {
-            add("baro", 1.0 - min(1.0, abs(a.pressure - b.pressure) / 1.5), 2.0) // ~same floor
-        }
-        if (!stableOnly) {
-            if (a.ble.isNotEmpty() || b.ble.isNotEmpty()) add("ble", jaccard(a.ble, b.ble), 1.5)
-            if (!a.light.isNaN() && !b.light.isNaN()) {
-                val dl = abs((a.light - b.light).toDouble()) / (kotlin.math.max(a.light, b.light).toDouble() + 1.0)
-                add("light", 1.0 - min(1.0, dl), 0.5)
-            }
-        }
-        val pct = if (wsum == 0.0) 0 else ((acc / wsum) * 100).toInt()
-        return Pair(pct, parts.joinToString("  "))
+        logln("# VERIFY  findings=$n  chain=${if (ok) "VALID ✓" else "TAMPERED ✗"}", if (ok) "#6c6" else "#e55")
+    }
+    private fun exportLedger() {
+        try { val out = File(getExternalFilesDir(null), "aegis-findings.json"); out.writeText(if (ledgerFile.exists()) ledgerFile.readText() else "")
+            logln("exported -> ${out.absolutePath}", "#9ad"); toast("Exported") } catch (e: Exception) { logln("export err: ${e.message}", "#e55") }
     }
 
-    private fun compareLast() {
-        val a = lastSeal
-        if (a == null) { logln("capture two seals first", "#dc6"); return }
-        logln("# capturing a second seal to compare…", "#9ad")
-        capture { b ->
-            val (pct, br) = similarity(a, b, false)
-            val verdict = when { pct >= 80 -> "SAME SCENE (here & now)"; pct >= 55 -> "SAME PLACE, later"; else -> "DIFFERENT PLACE" }
-            logln("# CO-PRESENCE  $pct%  -> $verdict", if (pct >= 55) "#6c6" else "#e55")
-            logln("  $br", "#9fd")
-            lastSeal = b
-        }
-    }
-
-    private fun setTrusted() {
-        capture { s -> trustedSeal = s; logln("# TRUSTED SCENE saved (this room is now the key)", "#6c6") }
-    }
-
-    private fun testUnlock() {
-        val t = trustedSeal
-        if (t == null) { logln("set a trusted scene first", "#dc6"); return }
-        logln("# sensing current scene…", "#9ad")
-        capture { now ->
-            val (pct, br) = similarity(t, now, true) // stable channels only
-            val ok = pct >= 70
-            logln("# PLACE-LOCK  $pct%  -> ${if (ok) "AUTHORIZED ✓ (in trusted place)" else "DENIED ✗ (wrong place)"}", if (ok) "#6c6" else "#e55")
-            logln("  $br", "#9fd")
-        }
-    }
-
-    // ── TEE key + ledger (hardware root of trust) ────────────────────────────
+    // ── TEE key ──────────────────────────────────────────────────────────────
     private fun initKey() {
         try {
             val ks = KeyStore.getInstance("AndroidKeyStore"); ks.load(null)
-            if (ks.containsAlias(ALIAS)) {
-                val e = ks.getEntry(ALIAS, null) as KeyStore.PrivateKeyEntry
-                keyPair = KeyPair(e.certificate.publicKey, e.privateKey); strongBox = Build.VERSION.SDK_INT >= 28; return
-            }
+            if (ks.containsAlias(ALIAS)) { val e = ks.getEntry(ALIAS, null) as KeyStore.PrivateKeyEntry
+                keyPair = KeyPair(e.certificate.publicKey, e.privateKey); strongBox = Build.VERSION.SDK_INT >= 28; return }
             keyPair = genKey(true); strongBox = true
-        } catch (e: Exception) {
-            try { keyPair = genKey(false); strongBox = false } catch (e2: Exception) { keyPair = null }
-        }
+        } catch (e: Exception) { try { keyPair = genKey(false); strongBox = false } catch (e2: Exception) { keyPair = null } }
     }
     private fun genKey(useStrongBox: Boolean): KeyPair {
         val kpg = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore")
-        val b = KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_SIGN)
-            .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
-            .setDigests(KeyProperties.DIGEST_SHA256)
+        val b = KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_SIGN).setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1")).setDigests(KeyProperties.DIGEST_SHA256)
         if (useStrongBox && Build.VERSION.SDK_INT >= 28) b.setIsStrongBoxBacked(true)
         kpg.initialize(b.build()); return kpg.generateKeyPair()
     }
     private fun teeSign(message: String): String {
         val kp = keyPair ?: return "NO_KEY"
-        return try { val s = Signature.getInstance("SHA256withECDSA"); s.initSign(kp.private); s.update(message.toByteArray()); hex(s.sign()) }
-        catch (e: Exception) { "SIGN_ERR" }
-    }
-    private fun showKey() { logln("# TEE PUBLIC KEY (${if (strongBox) "StrongBox" else "TEE/sw"})", "#9ad"); logln("  ${pubB64().take(64)}…", "#9fd") }
-
-    private fun verifyChain() {
-        if (!ledgerFile.exists()) { logln("no seals yet", "#dc6"); return }
-        var prev = "GENESIS"; var ok = true; var n = 0
-        ledgerFile.forEachLine { ln ->
-            if (ln.isBlank()) return@forEachLine; n++
-            val body = ln.substringAfter("\"entry\":").substringBeforeLast(",\"sealHash\"")
-            val claimed = ln.substringAfter("\"sealHash\":\"").substringBefore("\"")
-            if (sha256hex(prev + "|" + body) != claimed) ok = false
-            prev = claimed
-        }
-        logln("# VERIFY  seals=$n  chain=${if (ok) "VALID ✓" else "TAMPERED ✗"}", if (ok) "#6c6" else "#e55")
-    }
-    private fun exportLedger() {
-        try {
-            val out = File(getExternalFilesDir(null), "aegis-seals.json")
-            out.writeText(if (ledgerFile.exists()) ledgerFile.readText() else ""); logln("exported -> ${out.absolutePath}", "#9ad"); toast("Exported")
-        } catch (e: Exception) { logln("export err: ${e.message}", "#e55") }
+        return try { val s = Signature.getInstance("SHA256withECDSA"); s.initSign(kp.private); s.update(message.toByteArray()); hex(s.sign()) } catch (e: Exception) { "SIGN_ERR" }
     }
 
-    // ── math helpers ─────────────────────────────────────────────────────────
-    private fun cosine(a: FloatArray, b: FloatArray): Double {
-        if (a.any { it.isNaN() } || b.any { it.isNaN() }) return 0.0
-        var dot = 0.0; var na = 0.0; var nb = 0.0
-        for (i in 0..2) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i] }
-        if (na == 0.0 || nb == 0.0) return 0.0
-        return dot / (sqrt(na) * sqrt(nb))
-    }
-    private fun jaccard(a: Set<String>, b: Set<String>): Double {
-        if (a.isEmpty() && b.isEmpty()) return 1.0
-        val inter = a.count { b.contains(it) }.toDouble(); val uni = (a + b).size.toDouble()
-        return if (uni == 0.0) 0.0 else inter / uni
-    }
-
-    // ── misc ─────────────────────────────────────────────────────────────────
-    private fun pubB64(): String { val kp = keyPair ?: return "NONE"; return Base64.encodeToString(kp.public.encoded, Base64.NO_WRAP) }
+    // ── helpers ──────────────────────────────────────────────────────────────
     private fun sha256hex(s: String) = MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
     private fun h8(s: String) = sha256hex(s).take(8)
     private fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it) }
-    private fun randomHex(n: Int): String { val a = ByteArray(n); rng.nextBytes(a); return hex(a) }
     private fun fmt(x: Float) = if (x.isNaN()) "n/a" else "%.1f".format(x)
     private fun logln(s: String, color: String = "#9fd") { log.text = "$s\n${log.text}" }
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
