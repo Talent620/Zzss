@@ -9,6 +9,7 @@
     "demo:market": "node --experimental-strip-types src/demo/market.ts",
     "demo:keyless": "node --experimental-strip-types src/demo/keyless.ts",
     "demo:witness": "node --experimental-strip-types src/demo/witness.ts",
+    "demo:condition": "node --experimental-strip-types src/demo/condition.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
@@ -16,6 +17,8 @@
   },
   "devDependencies": {
     "@types/node": "^26.0.1",
+    "esbuild": "^0.28.1",
+    "postject": "^1.0.0-alpha.6",
     "typescript": "^5.9.3"
   }
 }

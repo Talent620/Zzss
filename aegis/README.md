@@ -63,6 +63,10 @@ npm run demo          # the four hardware-safety scenarios (src/demo/run.ts)
 npm run demo:market   # the N-dimensional Value Vector auction (src/demo/market.ts)
 npm run demo:keyless  # Authorization as a Verb — credential theft is dead (src/demo/keyless.ts)
 npm run demo:witness  # The Witness Protocol — interception/replay is dead (src/demo/witness.ts)
+npm run demo:condition # Physical Truth Ledger — condition, not the calendar (src/demo/condition.ts)
+
+# standalone CLI tool (single binary, no Node needed) — see tools/build-binaries.sh
+./tools/build-binaries.sh && ./dist/aegis-linux-x64 all
 ```
 
 No dependencies are required to run the demo (pure Node ≥ 22.6 with native TS
