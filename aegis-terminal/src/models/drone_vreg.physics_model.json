@@ -1,0 +1,36 @@
+{
+  "schema": "aegis.physics_model/1",
+  "deviceId": "drone.esc.vreg.0",
+  "displayName": "Quadcopter ESC Voltage Regulator",
+  "envelope": {
+    "rail": "drone.esc.vreg.0",
+    "maxVolts": 13.2,
+    "maxTempC": 95,
+    "maxCurrentA": 8
+  },
+  "thermal": {
+    "dtMs": 10,
+    "ambientC": 25,
+    "thermalGain": 0.012,
+    "coolingRate": 0.05,
+    "degradationTempC": 60
+  },
+  "instructionSet": [
+    "SET_CURRENT_LIMIT",
+    "SET_VOLTAGE",
+    "RAMP",
+    "HOLD"
+  ],
+  "bus": {
+    "transport": "ble",
+    "serviceUuid": "0000fff0-0000-1000-8000-00805f9b34fb",
+    "charUuid": "0000fff1-0000-1000-8000-00805f9b34fb",
+    "framing": "aegis-frame/1"
+  },
+  "signature": {
+    "alg": "ed25519",
+    "publisher": "acme-robotics",
+    "publicKeyHex": "ca3c7017cb92237f339e4e11b1d8d38cd9ea96c026a022acdd9b8dc8fc288593",
+    "sigHex": "6842a5768dc5591550939a33496f817e273e17e2d96a49b731573a1e53c53bd0e2ccf320efc60b0e58d5547ce341621de5ad576eeefa947e8dcbcdfb140d4007"
+  }
+}

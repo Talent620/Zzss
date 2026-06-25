@@ -1,0 +1,23 @@
+{
+  "name": "aegis-terminal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Aegis Terminal — Android physical terminal for the Aegis Physics Shield.",
+  "scripts": {
+    "android": "react-native run-android",
+    "start": "react-native start",
+    "headless": "node --experimental-strip-types src/bridge/__demo__/headlessShield.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@noble/ed25519": "^2.3.0",
+    "@noble/hashes": "^1.8.0",
+    "react": "18.3.1",
+    "react-native": "0.75.4"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "@types/react": "^18.3.0",
+    "typescript": "^5.9.3"
+  }
+}

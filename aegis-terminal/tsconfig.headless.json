@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "types": ["node"], "jsx": "preserve" },
+  "include": [
+    "src/core", "src/sim", "src/verifier", "src/plugins/schema.ts",
+    "src/plugins/PhysicsModelRegistry.ts", "src/bridge/types.ts"
+  ]
+}
