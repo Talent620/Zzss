@@ -20,14 +20,18 @@ export interface HardwareEnvelope {
 
 export interface SimSummary {
   samples: number;
+  durationMs: number;
   peakVolts: number;
   finalVolts: number;
   peakTempC: number;
   currentLimitA: number;
+  energyJ: number; // integral of V*I over the run — a trusted physical cost dimension
   trace: number[]; // voltage samples — makes the result hash sensitive to any divergence
+  tempTrace: number[]; // junction-temp samples — lets the orchestrator compute hidden stress itself
 }
 
 const DT_MS = 10;
+const DT_S = DT_MS / 1000;
 const AMBIENT_C = 25;
 
 function r4(n: number): number {
@@ -39,14 +43,18 @@ export function simulate(script: PowerScript): SimSummary {
   let v = 0;
   let temp = AMBIENT_C;
   let currentLimit = 1; // amps, until the script sets it
+  let energyJ = 0;
   const trace: number[] = [];
+  const tempTrace: number[] = [];
 
   const step = (volts: number) => {
     v = volts;
     // crude electrothermal proxy: dissipation ~ V * I, with first-order cooling.
     const power = Math.max(0, v) * currentLimit;
+    energyJ += power * DT_S;
     temp += power * 0.012 - (temp - AMBIENT_C) * 0.05;
     trace.push(r4(v));
+    tempTrace.push(r4(temp));
   };
 
   for (const op of script.ops) {
@@ -72,12 +80,16 @@ export function simulate(script: PowerScript): SimSummary {
   }
 
   const peakVolts = trace.length ? Math.max(...trace) : 0;
+  const peakTempC = tempTrace.length ? Math.max(...tempTrace) : AMBIENT_C;
   return {
     samples: trace.length,
+    durationMs: trace.length * DT_MS,
     peakVolts: r4(peakVolts),
     finalVolts: r4(v),
-    peakTempC: r4(temp),
+    peakTempC: r4(peakTempC),
     currentLimitA: r4(currentLimit),
+    energyJ: r4(energyJ),
     trace,
+    tempTrace,
   };
 }

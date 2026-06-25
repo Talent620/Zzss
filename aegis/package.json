@@ -6,6 +6,7 @@
   "description": "Aegis — Zero-Trust Autonomous Evolution. AI may write its own hardware skills, but the physical world refuses to execute them without an independently re-verified Proof-of-Thought.",
   "scripts": {
     "demo": "node --experimental-strip-types src/demo/run.ts",
+    "demo:market": "node --experimental-strip-types src/demo/market.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

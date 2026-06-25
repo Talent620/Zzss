@@ -59,7 +59,8 @@ A lie is caught by WALL 1. An honest-but-dangerous skill is caught by WALL 2.
 
 ```bash
 cd aegis
-npm run demo          # node --experimental-strip-types src/demo/run.ts
+npm run demo          # the four hardware-safety scenarios (src/demo/run.ts)
+npm run demo:market   # the N-dimensional Value Vector auction (src/demo/market.ts)
 ```
 
 No dependencies are required to run the demo (pure Node ≥ 22.6 with native TS
@@ -83,6 +84,7 @@ type-stripping; `npm install` is only needed for `npm run typecheck`).
 | `src/sim/powerscript.ts` | the closed instruction set the agent is confined to (no `eval`) |
 | `src/sim/physics.ts` | the trusted ground-truth simulator the verifier re-runs |
 | `src/verifier/verify.ts` | the Hardware-in-the-Loop guardian (two walls) |
+| `src/market/vectorMatch.ts` | N-dimensional Value Vector auction; picks the **safest** bid, not the cheapest |
 | `src/verifier/androidBridge.ts` | the physical gate; emits to the bus only with a valid token |
 | `src/agent/jarvis.ts` | the agent: writes skills, attests honestly or deceptively |
 | `src/agent/selfCorrect.ts` | the self-correction loop: rewrite until the guardian relents |
