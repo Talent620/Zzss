@@ -12,7 +12,9 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -85,6 +87,9 @@ class MainActivity : Activity(), SensorEventListener {
     private var baseAcc: FloatArray? = null
     // RF room watch
     private var roomBaseline: Set<String>? = null
+    // ultrasonic sonar
+    private var sonarOn = false
+    private var sonarBaseline = -1.0
 
     // follower tracking: hashed BLE addr -> sweeps seen, last RSSI, last time
     private val seen = HashMap<String, IntArray>() // [sweepsSeen, lastRssi]
@@ -101,7 +106,7 @@ class MainActivity : Activity(), SensorEventListener {
         val root = ScrollView(this)
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#0b0f14"))
+            setBackgroundColor(clr("#0b0f14"))
             setPadding(dp(18), dp(20), dp(18), dp(28))
         }
         root.addView(col)
@@ -120,7 +125,7 @@ class MainActivity : Activity(), SensorEventListener {
 
         col.addView(section("EMF · HIDDEN ELECTRONICS"))
         col.addView(sub("Magnetic-field meter. Cameras, mics, speakers, motors and magnets disturb the field. Calibrate in open air, then sweep near objects."))
-        col.addView(button("CALIBRATE BASELINE") { magBaseline = magMag(); logln("# baseline = ${fmt(magBaseline)} µT", "#9ad") })
+        col.addView(button("CALIBRATE BASELINE") { magBaseline = magMag(); logln("# baseline = ${fmt(magBaseline)} µT", "#99aadd") })
         col.addView(button("EMF SCAN (point at object)") { emfScan() })
 
         col.addView(section("ULTRASOUND LISTENER  ·  inaudible beacons"))
@@ -130,13 +135,19 @@ class MainActivity : Activity(), SensorEventListener {
         col.addView(section("WALL MAP  ·  hidden wiring / cameras"))
         col.addView(sub("Live magnetic map. Start it and slowly sweep the phone across a wall/object — peaks reveal concealed metal, wiring, motors, magnets."))
         val wallBtn = button("WALL SCAN ▶ (live)") {}
-        wallBtn.setOnClickListener { try { toggleWall(wallBtn) } catch (e: Exception) { logln("err: ${e.message}", "#e55") } }
+        wallBtn.setOnClickListener { try { toggleWall(wallBtn) } catch (e: Exception) { logln("err: ${e.message}", "#ee5555") } }
         col.addView(wallBtn)
         liveView = TextView(this).apply {
-            setTextColor(Color.parseColor("#6cf")); textSize = 13f; typeface = android.graphics.Typeface.MONOSPACE
-            setBackgroundColor(Color.parseColor("#06090d")); setPadding(dp(12), dp(10), dp(12), dp(10)); text = "—"
+            setTextColor(clr("#66ccff")); textSize = 13f; typeface = android.graphics.Typeface.MONOSPACE
+            setBackgroundColor(clr("#06090d")); setPadding(dp(12), dp(10), dp(12), dp(10)); text = "—"
         }
         col.addView(liveView)
+
+        col.addView(section("ULTRASONIC SONAR  ·  motion radar (world-first)"))
+        col.addView(sub("Emits an inaudible ~20 kHz tone and listens to its own echo. When anyone moves in the room, the Doppler shift gives them away — intrusion detection by sound you can't hear. Pair with ARM HONEY-SEAL to log motion."))
+        val sonarBtn = button("SONAR ▶ (ultrasonic motion)") {}
+        sonarBtn.setOnClickListener { try { toggleSonar(sonarBtn) } catch (e: Exception) { logln("err: ${e.message}", "#ee5555") } }
+        col.addView(sonarBtn)
 
         col.addView(section("RF ROOM WATCH  ·  new transmitter alarm"))
         col.addView(sub("Snapshot a room's radios, leave, come back — it tells you if a NEW transmitter appeared (someone switched on a bug or walked in with a device)."))
@@ -154,16 +165,16 @@ class MainActivity : Activity(), SensorEventListener {
 
         col.addView(section("LOG"))
         log = TextView(this).apply {
-            setTextColor(Color.parseColor("#9fd")); textSize = 12.5f
+            setTextColor(clr("#99ffdd")); textSize = 12.5f
             typeface = android.graphics.Typeface.MONOSPACE
-            setBackgroundColor(Color.parseColor("#06090d"))
+            setBackgroundColor(clr("#06090d"))
             setPadding(dp(12), dp(12), dp(12), dp(12)); text = "ready.\n"
         }
         col.addView(log)
         setContentView(root)
 
-        try { initKey() } catch (e: Throwable) { logln("key init: ${e.message}", "#dc6") }
-        try { initSensors() } catch (e: Throwable) { logln("sensors: ${e.message}", "#dc6") }
+        try { initKey() } catch (e: Throwable) { logln("key init: ${e.message}", "#ddcc66") }
+        try { initSensors() } catch (e: Throwable) { logln("sensors: ${e.message}", "#ddcc66") }
         try { requestPerms() } catch (e: Throwable) {}
         try {
             status.text = "TEE: " + (if (keyPair != null) (if (strongBox) "StrongBox ✓" else "TEE ✓") else "sw") +
@@ -178,11 +189,11 @@ class MainActivity : Activity(), SensorEventListener {
         try {
             val sw = java.io.StringWriter(); e.printStackTrace(java.io.PrintWriter(sw))
             val tv = TextView(this).apply {
-                setTextColor(Color.parseColor("#ff6b6b")); textSize = 12f
+                setTextColor(clr("#ff6b6b")); textSize = 12f
                 typeface = android.graphics.Typeface.MONOSPACE; setPadding(28, 40, 28, 28)
                 text = "AEGIS — start error (screenshot this and send it):\n\n$sw"
             }
-            setContentView(ScrollView(this).apply { setBackgroundColor(Color.parseColor("#0b0f14")); addView(tv) })
+            setContentView(ScrollView(this).apply { setBackgroundColor(clr("#0b0f14")); addView(tv) })
         } catch (_: Throwable) {}
     }
     private fun saveCrash(ex: Throwable) {
@@ -203,7 +214,7 @@ class MainActivity : Activity(), SensorEventListener {
         sm?.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)?.let { sm?.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
         sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sm?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
     }
-    override fun onDestroy() { super.onDestroy(); try { sm?.unregisterListener(this) } catch (_: Exception) {} }
+    override fun onDestroy() { super.onDestroy(); sonarOn = false; try { sm?.unregisterListener(this) } catch (_: Exception) {} }
     override fun onAccuracyChanged(s: Sensor?, a: Int) {}
     override fun onSensorChanged(e: SensorEvent) {
         when (e.sensor.type) {
@@ -216,7 +227,7 @@ class MainActivity : Activity(), SensorEventListener {
 
     // ── RF SWEEP ─────────────────────────────────────────────────────────────
     private fun rfSweep() {
-        logln("# RF SWEEP scanning…", "#9ad")
+        logln("# RF SWEEP scanning…", "#99aadd")
         Thread {
             val found = ArrayList<String>()
             val flags = ArrayList<String>()
@@ -249,9 +260,9 @@ class MainActivity : Activity(), SensorEventListener {
             } catch (_: Exception) {}
             seal("RF_SWEEP", (found + flags).joinToString(" | "))
             runOnUiThread {
-                logln("# RF SWEEP #$sweepIdx  ${found.joinToString(" · ")}", "#6c6")
-                if (flags.isEmpty()) logln("  no known trackers in range", "#9fd")
-                else flags.forEach { logln("  $it", "#e55") }
+                logln("# RF SWEEP #$sweepIdx  ${found.joinToString(" · ")}", "#66cc66")
+                if (flags.isEmpty()) logln("  no known trackers in range", "#99ffdd")
+                else flags.forEach { logln("  $it", "#ee5555") }
             }
         }.start()
     }
@@ -286,13 +297,13 @@ class MainActivity : Activity(), SensorEventListener {
 
     // ── FOLLOWER DETECTOR ────────────────────────────────────────────────────
     private fun followers() {
-        if (sweepIdx < 2) { logln("run RF SWEEP at least 2–3× (move around) first", "#dc6"); return }
+        if (sweepIdx < 2) { logln("run RF SWEEP at least 2–3× (move around) first", "#ddcc66"); return }
         val persistent = seen.entries.filter { it.value[0] >= 3 }.sortedByDescending { it.value[0] }
-        logln("# FOLLOWER ANALYSIS  (${sweepIdx} sweeps)", "#9ad")
-        if (persistent.isEmpty()) { logln("  nothing is consistently following you ✓", "#6c6"); return }
+        logln("# FOLLOWER ANALYSIS  (${sweepIdx} sweeps)", "#99aadd")
+        if (persistent.isEmpty()) { logln("  nothing is consistently following you ✓", "#66cc66"); return }
         for (e in persistent.take(8)) {
             val strong = e.value[1] > -70
-            logln("  ${if (strong) "⚠ FOLLOWING" else "·"} id=${e.key}  seen ${e.value[0]}/${sweepIdx} sweeps  rssi=${e.value[1]}dBm", if (strong) "#e55" else "#9fd")
+            logln("  ${if (strong) "⚠ FOLLOWING" else "·"} id=${e.key}  seen ${e.value[0]}/${sweepIdx} sweeps  rssi=${e.value[1]}dBm", if (strong) "#ee5555" else "#99ffdd")
         }
         seal("FOLLOWER", "persistent=${persistent.size}")
     }
@@ -300,20 +311,20 @@ class MainActivity : Activity(), SensorEventListener {
     // ── EMF / hidden electronics ─────────────────────────────────────────────
     private fun emfScan() {
         val m = magMag()
-        if (m.isNaN()) { logln("no magnetometer", "#dc6"); return }
+        if (m.isNaN()) { logln("no magnetometer", "#ddcc66"); return }
         val base = if (magBaseline.isNaN()) 45f else magBaseline // ~Earth field default
         val delta = abs(m - base)
         val level = when { delta > 80 -> "STRONG ANOMALY — concealed magnet/motor?"; delta > 30 -> "anomaly — electronics nearby"; delta > 12 -> "slight disturbance"; else -> "clean" }
-        logln("# EMF  ${fmt(m)} µT  (Δ ${fmt(delta)} vs ${fmt(base)})  -> $level", if (delta > 30) "#e55" else "#6c6")
+        logln("# EMF  ${fmt(m)} µT  (Δ ${fmt(delta)} vs ${fmt(base)})  -> $level", if (delta > 30) "#ee5555" else "#66cc66")
         if (delta > 12) seal("EMF", "mag=${fmt(m)} delta=${fmt(delta)}")
     }
 
     // ── ULTRASOUND beacon detector (mic + FFT) ───────────────────────────────
     private fun ultrasound() {
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            logln("grant microphone permission, then retry", "#dc6"); requestPerms(); return
+            logln("grant microphone permission, then retry", "#ddcc66"); requestPerms(); return
         }
-        logln("# listening for inaudible 18–22 kHz…", "#9ad")
+        logln("# listening for inaudible 18–22 kHz…", "#99aadd")
         Thread {
             try {
                 val rate = 44100; val N = 4096
@@ -332,10 +343,10 @@ class MainActivity : Activity(), SensorEventListener {
                 val ratio = if (total <= 0) 0.0 else ultra / total
                 val present = ratio > 0.04 && total > 1e6
                 runOnUiThread {
-                    logln("# ULTRASOUND  ultrasonic share=${(ratio * 100).toInt()}%  -> ${if (present) "BEACON DETECTED ⚠" else "clear ✓"}", if (present) "#e55" else "#6c6")
+                    logln("# ULTRASOUND  ultrasonic share=${(ratio * 100).toInt()}%  -> ${if (present) "BEACON DETECTED ⚠" else "clear ✓"}", if (present) "#ee5555" else "#66cc66")
                 }
                 if (present) seal("ULTRASOUND", "ratio=${"%.3f".format(ratio)}")
-            } catch (e: Exception) { runOnUiThread { logln("audio error: ${e.message}", "#e55") } }
+            } catch (e: Exception) { runOnUiThread { logln("audio error: ${e.message}", "#ee5555") } }
         }.start()
     }
 
@@ -398,18 +409,18 @@ class MainActivity : Activity(), SensorEventListener {
 
     // ── RF ROOM WATCH ────────────────────────────────────────────────────────
     private fun setRoomBaseline() {
-        logln("# capturing room RF baseline…", "#9ad")
-        Thread { val ids = scanIds(); roomBaseline = ids; runOnUiThread { logln("# baseline: ${ids.size} transmitters in this room", "#6c6") } }.start()
+        logln("# capturing room RF baseline…", "#99aadd")
+        Thread { val ids = scanIds(); roomBaseline = ids; runOnUiThread { logln("# baseline: ${ids.size} transmitters in this room", "#66cc66") } }.start()
     }
     private fun checkRoomChange() {
         val base = roomBaseline
-        if (base == null) { logln("set a room baseline first", "#dc6"); return }
-        logln("# re-scanning room…", "#9ad")
+        if (base == null) { logln("set a room baseline first", "#ddcc66"); return }
+        logln("# re-scanning room…", "#99aadd")
         Thread {
             val now = scanIds(); val added = now - base
             runOnUiThread {
-                if (added.isEmpty()) logln("# room unchanged ✓  no new transmitters", "#6c6")
-                else { logln("# ${added.size} NEW transmitter(s) appeared ⚠", "#e55"); added.take(8).forEach { logln("  + id=$it", "#e55") } }
+                if (added.isEmpty()) logln("# room unchanged ✓  no new transmitters", "#66cc66")
+                else { logln("# ${added.size} NEW transmitter(s) appeared ⚠", "#ee5555"); added.take(8).forEach { logln("  + id=$it", "#ee5555") } }
             }
             if (added.isNotEmpty()) seal("RF_CHANGE", "new=${added.size}")
         }.start()
@@ -442,7 +453,7 @@ class MainActivity : Activity(), SensorEventListener {
             val d = accDelta()
             if (d > 2.5f && !tripped) {
                 tripped = true; seal("TAMPER", "delta=${fmt(d)}")
-                runOnUiThread { logln("⚠ TAMPER — phone moved while armed (Δ=${fmt(d)} m/s²)", "#e55"); toast("TAMPER detected!") }
+                runOnUiThread { logln("⚠ TAMPER — phone moved while armed (Δ=${fmt(d)} m/s²)", "#ee5555"); toast("TAMPER detected!") }
             }
             handler.postDelayed(this, 350)
         }
@@ -451,12 +462,62 @@ class MainActivity : Activity(), SensorEventListener {
     private fun armSeal() {
         baseAcc = floatArrayOf(accX, accY, accZ); armed = true; tripped = false
         handler.post(armRunnable)
-        logln("# HONEY-SEAL armed — leave the phone still. It records (signed) the instant it's touched.", "#9ad")
+        logln("# HONEY-SEAL armed — leave the phone still. It records (signed) the instant it's touched.", "#99aadd")
         toast("Armed — don't move the phone")
     }
     private fun checkSeal() {
         armed = false; handler.removeCallbacks(armRunnable)
-        logln("# HONEY-SEAL ${if (tripped) "TRIPPED ⚠ — it was moved while you were away" else "intact ✓ — untouched"}", if (tripped) "#e55" else "#6c6")
+        logln("# HONEY-SEAL ${if (tripped) "TRIPPED ⚠ — it was moved while you were away" else "intact ✓ — untouched"}", if (tripped) "#ee5555" else "#66cc66")
+    }
+
+    // ── ULTRASONIC SONAR (Doppler motion radar) ──────────────────────────────
+    private fun toggleSonar(b: Button) {
+        if (sonarOn) { sonarOn = false; b.text = "SONAR ▶ (ultrasonic motion)"; return }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            logln("grant microphone permission, then retry", "#ddcc66"); requestPerms(); return
+        }
+        sonarOn = true; sonarBaseline = -1.0; b.text = "SONAR ◼ (stop)"
+        logln("# SONAR on — emitting inaudible 20 kHz; listening for motion", "#99aadd")
+        Thread { sonarLoop() }.start()
+    }
+    private fun sonarLoop() {
+        val rate = 44100; val n = 4096; val freq = 20000.0
+        var track: AudioTrack? = null; var rec: AudioRecord? = null
+        try {
+            val tone = ShortArray(rate)
+            for (i in tone.indices) tone[i] = (Math.sin(2.0 * Math.PI * freq * i / rate) * 0.6 * Short.MAX_VALUE).toInt().toShort()
+            val tmin = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            track = AudioTrack(AudioManager.STREAM_MUSIC, rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(tmin, tone.size * 2), AudioTrack.MODE_STATIC)
+            track.write(tone, 0, tone.size); track.setLoopPoints(0, tone.size, -1); track.play()
+            val rmin = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            val src = if (Build.VERSION.SDK_INT >= 24) MediaRecorder.AudioSource.UNPROCESSED else MediaRecorder.AudioSource.MIC
+            rec = AudioRecord(src, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(rmin, n * 4))
+            rec.startRecording()
+            val buf = ShortArray(n); val re = DoubleArray(n); val im = DoubleArray(n)
+            val carrier = (freq * n / rate).toInt()
+            while (sonarOn) {
+                var off = 0; while (off < n) { val r = rec.read(buf, off, n - off); if (r <= 0) break; off += r }
+                for (i in 0 until n) { val w = 0.5 - 0.5 * Math.cos(2.0 * Math.PI * i / (n - 1)); re[i] = buf[i] * w; im[i] = 0.0 }
+                fft(re, im)
+                var cE = 0.0; var sE = 0.0
+                for (i in carrier - 50..carrier + 50) {
+                    if (i < 2 || i >= n / 2) continue
+                    val p = re[i] * re[i] + im[i] * im[i]
+                    if (abs(i - carrier) <= 3) cE += p else sE += p
+                }
+                val ratio = if (cE <= 0) 0.0 else sE / cE
+                if (sonarBaseline < 0 && cE > 1e5) sonarBaseline = ratio
+                val motion = if (sonarBaseline <= 0) 1.0 else ratio / (sonarBaseline + 1e-9)
+                val moving = motion > 2.5 && cE > 1e5
+                runOnUiThread { liveView.text = "SONAR  motion ${"%.2f".format(motion)}×   ${if (moving) "⚠ MOVEMENT IN ROOM" else "still ·"}   ${if (cE <= 1e5) "(raise volume / unmute)" else ""}" }
+                if (moving && armed) seal("SONAR_MOTION", "motion=${"%.2f".format(motion)}")
+            }
+        } catch (e: Exception) { runOnUiThread { logln("sonar: ${e.message}", "#ee5555") } }
+        finally {
+            try { track?.stop(); track?.release() } catch (_: Exception) {}
+            try { rec?.stop(); rec?.release() } catch (_: Exception) {}
+            runOnUiThread { liveView.text = "—" }
+        }
     }
 
     // ── evidence ledger (hash-chained, TEE-signed) ───────────────────────────
@@ -467,18 +528,18 @@ class MainActivity : Activity(), SensorEventListener {
         seq += 1
     }
     private fun verifyChain() {
-        if (!ledgerFile.exists()) { logln("no findings yet", "#dc6"); return }
+        if (!ledgerFile.exists()) { logln("no findings yet", "#ddcc66"); return }
         var prev = "GENESIS"; var ok = true; var n = 0
         ledgerFile.forEachLine { ln -> if (ln.isBlank()) return@forEachLine; n++
             val body = ln.substringAfter("\"entry\":").substringBeforeLast(",\"hash\"")
             val claimed = ln.substringAfter("\"hash\":\"").substringBefore("\"")
             if (sha256hex(prev + "|" + body) != claimed) ok = false; prev = claimed
         }
-        logln("# VERIFY  findings=$n  chain=${if (ok) "VALID ✓" else "TAMPERED ✗"}", if (ok) "#6c6" else "#e55")
+        logln("# VERIFY  findings=$n  chain=${if (ok) "VALID ✓" else "TAMPERED ✗"}", if (ok) "#66cc66" else "#ee5555")
     }
     private fun exportLedger() {
         try { val out = File(getExternalFilesDir(null), "aegis-findings.json"); out.writeText(if (ledgerFile.exists()) ledgerFile.readText() else "")
-            logln("exported -> ${out.absolutePath}", "#9ad"); toast("Exported") } catch (e: Exception) { logln("export err: ${e.message}", "#e55") }
+            logln("exported -> ${out.absolutePath}", "#99aadd"); toast("Exported") } catch (e: Exception) { logln("export err: ${e.message}", "#ee5555") }
     }
 
     // ── TEE key ──────────────────────────────────────────────────────────────
@@ -506,17 +567,18 @@ class MainActivity : Activity(), SensorEventListener {
     private fun h8(s: String) = sha256hex(s).take(8)
     private fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it) }
     private fun fmt(x: Float) = if (x.isNaN()) "n/a" else "%.1f".format(x)
-    private fun logln(s: String, color: String = "#9fd") { log.text = "$s\n${log.text}" }
+    private fun logln(s: String, color: String = "#99ffdd") { log.text = "$s\n${log.text}" }
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-    private fun title(t: String) = TextView(this).apply { text = t; setTextColor(Color.parseColor("#dff")); textSize = 23f; letterSpacing = 0.16f; setPadding(0, 0, 0, dp(2)) }
-    private fun sub(t: String) = TextView(this).apply { text = t; setTextColor(Color.parseColor("#7a8")); textSize = 12.5f; setPadding(0, dp(2), 0, dp(8)) }
-    private fun section(t: String) = TextView(this).apply { text = t; setTextColor(Color.parseColor("#5bd")); textSize = 12f; letterSpacing = 0.18f; setPadding(0, dp(16), 0, dp(6)) }
+    private fun clr(s: String): Int = try { Color.parseColor(s) } catch (e: Exception) { Color.GRAY }
+    private fun title(t: String) = TextView(this).apply { text = t; setTextColor(clr("#ddffff")); textSize = 23f; letterSpacing = 0.16f; setPadding(0, 0, 0, dp(2)) }
+    private fun sub(t: String) = TextView(this).apply { text = t; setTextColor(clr("#77aa88")); textSize = 12.5f; setPadding(0, dp(2), 0, dp(8)) }
+    private fun section(t: String) = TextView(this).apply { text = t; setTextColor(clr("#55bbdd")); textSize = 12f; letterSpacing = 0.18f; setPadding(0, dp(16), 0, dp(6)) }
     private fun button(t: String, onClick: () -> Unit) = Button(this).apply {
         text = t; isAllCaps = false; gravity = Gravity.CENTER
-        setTextColor(Color.parseColor("#dff")); setBackgroundColor(Color.parseColor("#15314a"))
+        setTextColor(clr("#ddffff")); setBackgroundColor(clr("#15314a"))
         val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         lp.topMargin = dp(8); layoutParams = lp
-        setOnClickListener { try { onClick() } catch (e: Exception) { logln("err: ${e.message}", "#e55") } }
+        setOnClickListener { try { onClick() } catch (e: Exception) { logln("err: ${e.message}", "#ee5555") } }
     }
 }
