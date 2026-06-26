@@ -753,6 +753,7 @@ class MainActivity : Activity(), SensorEventListener, NfcAdapter.ReaderCallback 
     private fun sha256hex(s: String) = MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
     private fun h8(s: String) = sha256hex(s).take(8)
     private fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it) }
+    private fun randomHex(n: Int): String { val a = ByteArray(n); rng.nextBytes(a); return hex(a) }
     private fun fmt(x: Float) = if (x.isNaN()) "n/a" else "%.1f".format(x)
     private fun logln(s: String, color: String = "#99ffdd") {
         log.text = "$s\n${log.text}"
