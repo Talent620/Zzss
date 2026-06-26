@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Forest Radar — radar leśny RTI</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html,body { margin:0; height:100%; background:#04070a; color:#cfe; font-family:-apple-system,Roboto,system-ui,sans-serif; }
+  header { padding:10px 14px 4px; }
+  h1 { margin:0; font-size:17px; letter-spacing:2px; color:#7CFC9A; }
+  .sub { color:#5a7; font-size:11px; margin-top:2px; }
+  #wrap { display:flex; flex-direction:column; gap:8px; padding:8px 10px 16px; }
+  #cvs { width:100%; height:auto; background:#05090d; border:1px solid #123; border-radius:12px; display:block; }
+  .panel { background:#06090d; border:1px solid #16202b; border-radius:12px; padding:10px 12px; }
+  .status { font-size:20px; font-weight:800; letter-spacing:1px; }
+  .clear { color:#6c6; } .alert { color:#ff5b5b; }
+  .row { display:flex; flex-wrap:wrap; gap:6px 16px; font-size:12.5px; color:#9fd; margin-top:6px; }
+  .row b { color:#cfe; }
+  #dist { font-family:ui-monospace,"Roboto Mono",monospace; font-size:12px; color:#8ad; margin-top:6px; white-space:pre-wrap; }
+  #log { font-family:ui-monospace,monospace; font-size:11.5px; color:#9c9; margin-top:8px; max-height:120px; overflow:auto; white-space:pre-wrap; }
+  .controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  button { appearance:none; border:1px solid #27506e; background:#0e2335; color:#cfe; border-radius:10px; padding:9px 12px; font-size:13px; font-weight:700; }
+  button.on { background:#14323f; border-color:#2a6; color:#aef; }
+  label { font-size:11px; color:#7a8; }
+  input[type=range] { accent-color:#7CFC9A; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛰 FOREST RADAR</h1>
+  <div class="sub">Radar leśny bez urządzeń przy celu · tomografia radiowa (RTI) z siatki węzłów · podgląd na żywo + odległości</div>
+</header>
+
+<div id="wrap">
+  <canvas id="cvs" width="720" height="480"></canvas>
+
+  <div class="panel">
+    <div id="status" class="status clear">CZYSTO ✓</div>
+    <div class="row">
+      <span>Pozycja: <b id="pos">—</b></span>
+      <span>Najbliższy węzeł: <b id="near">—</b></span>
+      <span>Pewność: <b id="conf">—</b></span>
+      <span>Węzły: <b id="nn">8</b> · łącza: <b id="ll">28</b></span>
+    </div>
+    <div id="dist">—</div>
+    <div class="controls" style="margin-top:10px">
+      <button id="btnDemo" class="on" onclick="setPresent(true)">🚶 SYMULUJ INTRUZA</button>
+      <button id="btnClear" onclick="setPresent(false)">🌲 PUSTY LAS</button>
+      <button id="btnPause" onclick="togglePause()">⏸ PAUZA</button>
+      <label>Czułość <input id="sens" type="range" min="0.6" max="2.2" step="0.1" value="1.0" oninput="onSens()"></label>
+    </div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+// ===== RTI engine (inlined) =====
+const PLOT = { W: 60, H: 40 };
+function makeNodes(W=PLOT.W,H=PLOT.H){ return [
+  {id:"W1",x:0,y:0},{id:"W2",x:W/2,y:0},{id:"W3",x:W,y:0},{id:"W4",x:W,y:H/2},
+  {id:"W5",x:W,y:H},{id:"W6",x:W/2,y:H},{id:"W7",x:0,y:H},{id:"W8",x:0,y:H/2}]; }
+function makeLinks(n){ const L=[]; for(let i=0;i<n.length;i++)for(let j=i+1;j<n.length;j++)L.push([i,j]); return L; }
+const D2=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+class RTI{
+  constructor(nodes,links,o={}){ this.nodes=nodes; this.links=links; this.W=o.W??PLOT.W; this.H=o.H??PLOT.H;
+    this.gx=o.gx??36; this.gy=o.gy??24; this.lambda=o.lambda??3; this.build(); }
+  cell(cx,cy){ return {x:(cx+0.5)*this.W/this.gx, y:(cy+0.5)*this.H/this.gy}; }
+  build(){ const P=this.gx*this.gy; this.linkPix=this.links.map(()=>[]); this.pixNorm=new Float64Array(P);
+    this.links.forEach((lk,li)=>{ const a=this.nodes[lk[0]],b=this.nodes[lk[1]],D=D2(a,b);
+      for(let cy=0;cy<this.gy;cy++)for(let cx=0;cx<this.gx;cx++){ const q=this.cell(cx,cy),p=cy*this.gx+cx;
+        const e=Math.hypot(q.x-a.x,q.y-a.y)+Math.hypot(q.x-b.x,q.y-b.y)-D;
+        if(e<this.lambda){ const w=1/Math.sqrt(D); this.linkPix[li].push([p,w]); this.pixNorm[p]+=w; } } }); }
+  step(drops,thr=1.0){ const P=this.gx*this.gy,img=new Float64Array(P);
+    this.linkPix.forEach((lst,li)=>{ const d=drops[li]; if(d<=0)return; for(const pw of lst) img[pw[0]]+=pw[1]*d; });
+    let mx=0; for(let p=0;p<P;p++){ if(this.pixNorm[p]>0)img[p]/=this.pixNorm[p]; if(img[p]>mx)mx=img[p]; }
+    let person=null;
+    if(mx>=thr){ const t=mx*0.6; let sx=0,sy=0,sw=0;
+      for(let p=0;p<P;p++) if(img[p]>=t){ const cx=p%this.gx,cy=(p/this.gx)|0,c=this.cell(cx,cy); sx+=c.x*img[p]; sy+=c.y*img[p]; sw+=img[p]; }
+      if(sw>0) person={x:sx/sw,y:sy/sw,conf:mx}; }
+    return {image:img,max:mx,person}; }
+}
+class Sim{
+  constructor(nodes,links,o={}){ this.nodes=nodes; this.links=links; this.W=o.W??PLOT.W; this.H=o.H??PLOT.H;
+    this.noise=o.noise??0.35; this.A=o.A??6; this.lam=o.lam??4; this.t=0; }
+  personPos(t){ return {x:this.W/2+this.W*0.32*Math.sin(t*0.55), y:this.H/2+this.H*0.34*Math.sin(t*0.83+1)}; }
+  frame(dt,present=true){ this.t+=dt; const Pp=this.personPos(this.t);
+    const drops=this.links.map(lk=>{ let att=0;
+      if(present){ const a=this.nodes[lk[0]],b=this.nodes[lk[1]],D=D2(a,b);
+        const e=Math.hypot(Pp.x-a.x,Pp.y-a.y)+Math.hypot(Pp.x-b.x,Pp.y-b.y)-D;
+        if(e<this.lam) att=this.A*Math.max(0,1-e/this.lam); }
+      att+=(Math.random()-0.5)*2*this.noise; return Math.max(0,att); });
+    return {drops,truth:present?Pp:null}; }
+}
+
+// ===== setup =====
+const nodes=makeNodes(), links=makeLinks(nodes);
+const rti=new RTI(nodes,links,{lambda:3});
+const sim=new Sim(nodes,links,{noise:0.35});
+document.getElementById('nn').textContent=nodes.length;
+document.getElementById('ll').textContent=links.length;
+
+const cvs=document.getElementById('cvs'), ctx=cvs.getContext('2d');
+let present=true, paused=false, sens=1.0, sweep=0;
+let logLines=[]; let lastDetect=0;
+function setPresent(v){ present=v; document.getElementById('btnDemo').classList.toggle('on',v); document.getElementById('btnClear').classList.toggle('on',!v); }
+function togglePause(){ paused=!paused; document.getElementById('btnPause').textContent=paused?'▶ WZNÓW':'⏸ PAUZA'; }
+function onSens(){ sens=parseFloat(document.getElementById('sens').value); }
+function nowStr(){ const d=new Date(); return d.toTimeString().slice(0,8); }
+function log(s){ logLines.unshift(`[${nowStr()}] ${s}`); logLines=logLines.slice(0,10); document.getElementById('log').textContent=logLines.join('\n'); }
+
+// world -> screen
+function fit(){ const pad=34, w=cvs.width, h=cvs.height; const sx=(w-2*pad)/PLOT.W, sy=(h-2*pad)/PLOT.H; const s=Math.min(sx,sy);
+  return { s, ox:pad+(w-2*pad-PLOT.W*s)/2, oy:pad+(h-2*pad-PLOT.H*s)/2 }; }
+function W2S(p,f){ return { x:f.ox+p.x*f.s, y:f.oy+p.y*f.s }; }
+
+function draw(res, truth){
+  const f=fit(), w=cvs.width, h=cvs.height;
+  ctx.fillStyle='#05090d'; ctx.fillRect(0,0,w,h);
+  // grid
+  ctx.strokeStyle='#0c1a14'; ctx.lineWidth=1;
+  for(let gx=0;gx<=PLOT.W;gx+=10){ const a=W2S({x:gx,y:0},f),b=W2S({x:gx,y:PLOT.H},f); ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+  for(let gy=0;gy<=PLOT.H;gy+=10){ const a=W2S({x:0,y:gy},f),b=W2S({x:PLOT.W,y:gy},f); ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+  // heatmap
+  const img=res.image, gxn=rti.gx, gyn=rti.gy, cw=PLOT.W/gxn*f.s, ch=PLOT.H/gyn*f.s, mx=Math.max(res.max,0.001);
+  for(let cy=0;cy<gyn;cy++)for(let cx=0;cx<gxn;cx++){ const v=img[cy*gxn+cx]/mx; if(v<0.18)continue;
+    const c=rti.cell(cx,cy), s=W2S({x:c.x-PLOT.W/gxn/2,y:c.y-PLOT.H/gyn/2},f);
+    const r=Math.min(255,80+v*400), g=Math.max(0,255-v*340), bl=40;
+    ctx.fillStyle=`rgba(${r|0},${g|0},${bl},${(0.10+v*0.55).toFixed(2)})`; ctx.fillRect(s.x,s.y,cw+1,ch+1); }
+  // plot border
+  const tl=W2S({x:0,y:0},f), br=W2S({x:PLOT.W,y:PLOT.H},f);
+  ctx.strokeStyle='#1f6'; ctx.globalAlpha=0.5; ctx.lineWidth=2; ctx.strokeRect(tl.x,tl.y,br.x-tl.x,br.y-tl.y); ctx.globalAlpha=1;
+  // links (faint)
+  ctx.strokeStyle='rgba(60,140,90,0.10)'; ctx.lineWidth=1;
+  links.forEach(lk=>{ const a=W2S(nodes[lk[0]],f),b=W2S(nodes[lk[1]],f); ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); });
+  // radar sweep
+  const cxw=W2S({x:PLOT.W/2,y:PLOT.H/2},f); sweep+=0.03;
+  const gr=ctx.createRadialGradient(cxw.x,cxw.y,0,cxw.x,cxw.y,(br.x-tl.x)/2);
+  // nodes
+  nodes.forEach(n=>{ const s=W2S(n,f); ctx.fillStyle='#7CFC9A'; ctx.beginPath(); ctx.arc(s.x,s.y,5,0,7); ctx.fill();
+    ctx.fillStyle='#9fd'; ctx.font='10px monospace'; ctx.fillText(n.id,s.x+7,s.y-6); });
+  // person
+  if(res.person){ const s=W2S(res.person,f);
+    // distance lines + labels
+    nodes.forEach(n=>{ const ns=W2S(n,f),d=D2(n,res.person); ctx.strokeStyle='rgba(255,90,90,0.25)'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(ns.x,ns.y); ctx.lineTo(s.x,s.y); ctx.stroke();
+      ctx.fillStyle='rgba(255,160,160,0.8)'; ctx.font='9px monospace'; ctx.fillText(d.toFixed(0)+'m',(ns.x+s.x)/2,(ns.y+s.y)/2); });
+    const pulse=4+2*Math.sin(Date.now()/180);
+    ctx.strokeStyle='#ff4b4b'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(s.x,s.y,10+pulse,0,7); ctx.stroke();
+    ctx.fillStyle='#ff5b5b'; ctx.beginPath(); ctx.arc(s.x,s.y,5,0,7); ctx.fill();
+    ctx.strokeStyle='#ff8080'; ctx.beginPath(); ctx.moveTo(s.x-14,s.y); ctx.lineTo(s.x+14,s.y); ctx.moveTo(s.x,s.y-14); ctx.lineTo(s.x,s.y+14); ctx.stroke();
+    ctx.fillStyle='#fbb'; ctx.font='bold 11px monospace'; ctx.fillText('INTRUZ',s.x+12,s.y+4);
+  }
+  // ground-truth ghost (demo only, faint) to show accuracy
+  if(truth){ const s=W2S(truth,f); ctx.strokeStyle='rgba(120,200,255,0.35)'; ctx.beginPath(); ctx.arc(s.x,s.y,7,0,7); ctx.stroke(); }
+}
+
+function updatePanel(res){
+  const st=document.getElementById('status');
+  if(res.person){ st.textContent='⚠ WYKRYTO RUCH'; st.className='status alert';
+    document.getElementById('pos').textContent=`x=${res.person.x.toFixed(1)} m, y=${res.person.y.toFixed(1)} m`;
+    let near=null,nd=1e9; nodes.forEach(n=>{ const d=D2(n,res.person); if(d<nd){nd=d;near=n;} });
+    document.getElementById('near').textContent=`${near.id} (${nd.toFixed(1)} m)`;
+    document.getElementById('conf').textContent=res.max.toFixed(2);
+    document.getElementById('dist').textContent='Odległości do węzłów:\n'+nodes.map(n=>`${n.id}: ${D2(n,res.person).toFixed(1)} m`).join('   ');
+    if(Date.now()-lastDetect>2500){ log(`WYKRYTO RUCH @ x=${res.person.x.toFixed(0)} y=${res.person.y.toFixed(0)} (najbliżej ${near.id})`); }
+    lastDetect=Date.now();
+  } else { st.textContent='CZYSTO ✓'; st.className='status clear';
+    document.getElementById('pos').textContent='—'; document.getElementById('near').textContent='—';
+    document.getElementById('conf').textContent=res.max.toFixed(2); document.getElementById('dist').textContent='—'; }
+}
+
+let last=performance.now();
+function loop(now){ const dt=Math.min(0.1,(now-last)/1000); last=now;
+  if(!paused){ const f=sim.frame(dt,present); const res=rti.step(f.drops,sens); draw(res,present?f.truth:null); updatePanel(res); }
+  requestAnimationFrame(loop);
+}
+log('Radar uruchomiony — tryb SYMULACJA. Podłącz węzły ESP32, by przełączyć NA ŻYWO.');
+requestAnimationFrame(loop);
+
+// responsive canvas
+function resize(){ const w=Math.min(760, document.body.clientWidth-20); cvs.width=w; cvs.height=Math.round(w*0.66); }
+window.addEventListener('resize',resize); resize();
+</script>
+</body>
+</html>
