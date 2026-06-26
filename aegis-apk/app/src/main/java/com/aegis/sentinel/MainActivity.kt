@@ -66,6 +66,7 @@ class MainActivity : Activity(), SensorEventListener {
     private var strongBox = false
     private lateinit var log: TextView
     private lateinit var status: TextView
+    private var scroller: ScrollView? = null
     private lateinit var ledgerFile: File
 
     @Volatile private var magX = Float.NaN
@@ -110,7 +111,7 @@ class MainActivity : Activity(), SensorEventListener {
         try {
         ledgerFile = File(filesDir, "findings.jsonl")
 
-        val root = ScrollView(this)
+        val root = ScrollView(this); scroller = root
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(clr("#0b0f14"))
@@ -132,7 +133,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         col.addView(soundList)
         val anBtn = button("ANALIZUJ ▶ (mikrofon)") {}
-        anBtn.setOnClickListener { try { toggleAnalyzer(anBtn) } catch (e: Exception) { logln("err: ${e.message}", "#ee5555") } }
+        anBtn.setOnClickListener { try { toast("▶ Analizator"); toggleAnalyzer(anBtn) } catch (e: Exception) { logln("err: ${e.message}", "#ee5555") } }
         col.addView(anBtn)
 
         col.addView(section("SKAN RF  ·  trackery i obce nadajniki"))
@@ -155,7 +156,7 @@ class MainActivity : Activity(), SensorEventListener {
         col.addView(section("MAPA ŚCIANY  ·  ukryte kable / kamery"))
         col.addView(sub("Żywa mapa magnetyczna. Włącz i powoli przesuwaj telefon po ścianie/obiekcie — piki zdradzają ukryty metal, kable, silniki, magnesy."))
         val wallBtn = button("SKAN ŚCIANY ▶ (na żywo)") {}
-        wallBtn.setOnClickListener { try { toggleWall(wallBtn) } catch (e: Exception) { logln("err: ${e.message}", "#ee5555") } }
+        wallBtn.setOnClickListener { try { toast("▶ Mapa ściany"); toggleWall(wallBtn) } catch (e: Exception) { logln("err: ${e.message}", "#ee5555") } }
         col.addView(wallBtn)
         liveView = TextView(this).apply {
             setTextColor(clr("#66ccff")); textSize = 13f; typeface = android.graphics.Typeface.MONOSPACE
@@ -166,7 +167,7 @@ class MainActivity : Activity(), SensorEventListener {
         col.addView(section("SONAR ULTRADŹWIĘKOWY  ·  radar ruchu (pierwszy na świecie)"))
         col.addView(sub("Emituje niesłyszalny ton ~20 kHz i nasłuchuje echa. Gdy ktoś poruszy się w pokoju, efekt Dopplera go zdradza — wykrywanie intruza dźwiękiem, którego nie słyszysz. Połącz z UZBRÓJ HONEY-SEAL, by logować ruch."))
         val sonarBtn = button("SONAR ▶ (ruch)") {}
-        sonarBtn.setOnClickListener { try { toggleSonar(sonarBtn) } catch (e: Exception) { logln("err: ${e.message}", "#ee5555") } }
+        sonarBtn.setOnClickListener { try { toast("▶ Sonar"); toggleSonar(sonarBtn) } catch (e: Exception) { logln("err: ${e.message}", "#ee5555") } }
         col.addView(sonarBtn)
 
         col.addView(section("STRAŻ RF POKOJU  ·  alarm nowego nadajnika"))
@@ -247,7 +248,14 @@ class MainActivity : Activity(), SensorEventListener {
 
     // ── RF SWEEP ─────────────────────────────────────────────────────────────
     private fun rfSweep() {
-        logln("# RF SWEEP scanning…", "#99aadd")
+        val needBt = Build.VERSION.SDK_INT >= 31 && checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED
+        val needLoc = checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
+        if (needBt || needLoc) {
+            logln("# brak uprawnień — przyznaj Bluetooth + Lokalizację (Ustawienia → Aplikacje → Aegis → Uprawnienia)", "#ddcc66")
+            toast("Przyznaj uprawnienia: Bluetooth + Lokalizacja")
+            requestPerms(); return
+        }
+        logln("# skanuję RF (BLE + Wi-Fi)…", "#99aadd")
         Thread {
             val found = ArrayList<String>()
             val flags = ArrayList<String>()
@@ -683,7 +691,10 @@ class MainActivity : Activity(), SensorEventListener {
     private fun h8(s: String) = sha256hex(s).take(8)
     private fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it) }
     private fun fmt(x: Float) = if (x.isNaN()) "n/a" else "%.1f".format(x)
-    private fun logln(s: String, color: String = "#99ffdd") { log.text = "$s\n${log.text}" }
+    private fun logln(s: String, color: String = "#99ffdd") {
+        log.text = "$s\n${log.text}"
+        scroller?.post { scroller?.fullScroll(View.FOCUS_DOWN) }
+    }
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun clr(s: String): Int = try { Color.parseColor(s) } catch (e: Exception) { Color.GRAY }
@@ -695,6 +706,6 @@ class MainActivity : Activity(), SensorEventListener {
         setTextColor(clr("#ddffff")); setBackgroundColor(clr("#15314a"))
         val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         lp.topMargin = dp(8); layoutParams = lp
-        setOnClickListener { try { onClick() } catch (e: Exception) { logln("err: ${e.message}", "#ee5555") } }
+        setOnClickListener { try { toast("▶ $t"); onClick() } catch (e: Exception) { logln("err: ${e.message}", "#ee5555") } }
     }
 }
