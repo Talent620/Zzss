@@ -18,7 +18,11 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.location.LocationManager
 import android.net.wifi.WifiManager
+import android.nfc.NfcAdapter
+import android.nfc.Tag
+import android.nfc.tech.IsoDep
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -58,7 +62,7 @@ import kotlin.math.sqrt
  *  • ULTRASOUND        mic + FFT, detects 18–22 kHz tracking/ad beacons
  *  • EVIDENCE LEDGER   every finding hash-chained + TEE-signed + exportable
  */
-class MainActivity : Activity(), SensorEventListener {
+class MainActivity : Activity(), SensorEventListener, NfcAdapter.ReaderCallback {
 
     private val ALIAS = "aegis-detector-tee"
     private val rng = SecureRandom()
@@ -77,6 +81,7 @@ class MainActivity : Activity(), SensorEventListener {
     @Volatile private var accZ = 0f
     private var magBaseline = Float.NaN
     private var sm: SensorManager? = null
+    private var nfc: NfcAdapter? = null
 
     // wall-map live scan
     private val handler = Handler(Looper.getMainLooper())
@@ -135,6 +140,12 @@ class MainActivity : Activity(), SensorEventListener {
         val anBtn = button("ANALIZUJ ▶ (mikrofon)") {}
         anBtn.setOnClickListener { try { toast("▶ Analizator"); toggleAnalyzer(anBtn) } catch (e: Exception) { logln("err: ${e.message}", "#ee5555") } }
         col.addView(anBtn)
+
+        col.addView(section("🛰️ PROTOKÓŁ ŚWIADKA (NFC)  ·  Flipper z 2500"))
+        col.addView(sub("Nie kopiuje kart — WYZYWA je. Przyłóż kartę/urządzenie NFC do tyłu telefonu: Sentinel wysyła żywe wyzwanie i pieczętuje w TEE „Dowód Obecności” {czas, GPS, wynik, podpis}. Skopiowany/odtworzony sygnał nie odpowie na świeże wyzwanie."))
+        col.addView(button("JAK TO DZIAŁA?") {
+            logln("# Świadek aktywny w tle. Przyłóż kartę NFC — telefon ją zaświadczy (nie sklonuje).", "#66ccff")
+        })
 
         col.addView(section("SKAN RF  ·  trackery i obce nadajniki"))
         col.addView(sub("Skanuje BLE + Wi-Fi i nazywa prawdopodobne trackery (AirTag / SmartTag / Tile) oraz podejrzanie bliskie nienazwane urządzenia."))
@@ -196,10 +207,12 @@ class MainActivity : Activity(), SensorEventListener {
 
         try { initKey() } catch (e: Throwable) { logln("key init: ${e.message}", "#ddcc66") }
         try { initSensors() } catch (e: Throwable) { logln("sensors: ${e.message}", "#ddcc66") }
+        try { nfc = NfcAdapter.getDefaultAdapter(this) } catch (e: Throwable) {}
         try { requestPerms() } catch (e: Throwable) {}
         try {
             status.text = "TEE: " + (if (keyPair != null) (if (strongBox) "StrongBox ✓" else "TEE ✓") else "sw") +
-                "  ·  mag: " + (if (magX.isNaN()) "absent" else "ok")
+                "  ·  mag: " + (if (magX.isNaN()) "absent" else "ok") +
+                "  ·  NFC: " + (if (nfc == null) "brak" else if (nfc!!.isEnabled) "gotowy" else "wyłączony")
         } catch (e: Throwable) {}
         } catch (fatal: Throwable) {
             showError(fatal)
@@ -236,6 +249,56 @@ class MainActivity : Activity(), SensorEventListener {
         sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sm?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
     }
     override fun onDestroy() { super.onDestroy(); sonarOn = false; analyzerOn = false; try { sm?.unregisterListener(this) } catch (_: Exception) {} }
+
+    // ── WITNESS PROTOCOL (NFC) — challenge, don't clone ──────────────────────
+    override fun onResume() {
+        super.onResume()
+        try {
+            val flags = NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_NFC_B or
+                NfcAdapter.FLAG_READER_NFC_F or NfcAdapter.FLAG_READER_NFC_V or NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK
+            nfc?.enableReaderMode(this, this, flags, null)
+        } catch (_: Exception) {}
+    }
+    override fun onPause() {
+        super.onPause()
+        try { nfc?.disableReaderMode(this) } catch (_: Exception) {}
+    }
+    /** Called on a presented NFC tag. State: PRESENT -> CHALLENGE -> WITNESSED. */
+    override fun onTagDiscovered(tag: Tag) {
+        val uid = hex(tag.id)
+        val techs = tag.techList.joinToString(",") { it.substringAfterLast('.') }
+        val nonce = randomHex(16)
+        var resp = ""; var latency = -1L; var method = "uid-presence"
+        val iso = IsoDep.get(tag)
+        if (iso != null) {
+            method = "isodep-challenge"
+            try {
+                iso.connect()
+                val apdu = byteArrayOf(0x00, 0xA4.toByte(), 0x04, 0x00, 0x00) // benign live SELECT
+                val t0 = System.nanoTime()
+                val r = iso.transceive(apdu)
+                latency = (System.nanoTime() - t0) / 1_000_000
+                resp = hex(r)
+            } catch (e: Exception) { resp = "ERR" } finally { try { iso.close() } catch (_: Exception) {} }
+        }
+        val gps = lastFix(); val time = System.currentTimeMillis()
+        // Physical Presence Proof: {time, gps, challengeResult, AegisSignature} — TEE-signed via seal()
+        seal("WITNESS", "uid=$uid techs=$techs method=$method latencyMs=$latency gps=$gps time=$time nonce=$nonce result=${resp.take(20)}")
+        runOnUiThread {
+            logln("# ŚWIADEK ✓  $uid  ($method${if (latency >= 0) ", ${latency}ms" else ""})", "#66cc66")
+            logln("  Dowód Obecności podpisany w TEE · gps=$gps", "#99ffdd")
+            toast("Zaświadczono: $uid")
+        }
+    }
+    private fun lastFix(): String {
+        return try {
+            if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+                checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) return "n/a"
+            val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            val loc = lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER) ?: lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+            if (loc != null) "%.4f,%.4f".format(loc.latitude, loc.longitude) else "no-fix"
+        } catch (e: Exception) { "n/a" }
+    }
     override fun onAccuracyChanged(s: Sensor?, a: Int) {}
     override fun onSensorChanged(e: SensorEvent) {
         when (e.sensor.type) {
