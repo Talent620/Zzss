@@ -6,7 +6,9 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -25,6 +27,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.view.Gravity
+import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -90,6 +93,10 @@ class MainActivity : Activity(), SensorEventListener {
     // ultrasonic sonar
     private var sonarOn = false
     private var sonarBaseline = -1.0
+    // audio spectrum analyzer
+    private var analyzerOn = false
+    private lateinit var spectrum: SpectrumView
+    private lateinit var soundList: TextView
 
     // follower tracking: hashed BLE addr -> sweeps seen, last RSSI, last time
     private val seen = HashMap<String, IntArray>() // [sweepsSeen, lastRssi]
@@ -111,30 +118,43 @@ class MainActivity : Activity(), SensorEventListener {
         }
         root.addView(col)
 
-        col.addView(title("AEGIS  DETECTOR"))
-        col.addView(sub("A counter-surveillance tricorder. It reveals what is watching you — and signs the proof in hardware. It never tracks anyone."))
+        col.addView(title("AEGIS  DETEKTOR"))
+        col.addView(sub("Trikorder kontr-inwigilacyjny. Pokazuje, co Cię śledzi — i podpisuje dowód w sprzęcie. Sam nikogo nie śledzi."))
         status = sub("init…"); col.addView(status)
 
-        col.addView(section("RF SWEEP  ·  trackers & rogue radios"))
-        col.addView(sub("Scans BLE + Wi-Fi and names likely trackers (AirTag / SmartTag / Tile) and suspiciously close unnamed devices."))
-        col.addView(button("RUN RF SWEEP") { rfSweep() })
+        col.addView(section("🔊 ANALIZATOR DŹWIĘKU  ·  co słychać teraz"))
+        col.addView(sub("Wykres widma na żywo (też dźwięków, których nie słyszysz) + lista wykrytych źródeł: hum sieci, mowa, piski elektroniki, ultradźwięki beaconów."))
+        spectrum = SpectrumView(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(150)) }
+        col.addView(spectrum)
+        soundList = TextView(this).apply {
+            setTextColor(clr("#99ffdd")); textSize = 13f; typeface = android.graphics.Typeface.MONOSPACE
+            setBackgroundColor(clr("#06090d")); setPadding(dp(12), dp(10), dp(12), dp(10)); text = "naciśnij ANALIZUJ ▶"
+        }
+        col.addView(soundList)
+        val anBtn = button("ANALIZUJ ▶ (mikrofon)") {}
+        anBtn.setOnClickListener { try { toggleAnalyzer(anBtn) } catch (e: Exception) { logln("err: ${e.message}", "#ee5555") } }
+        col.addView(anBtn)
 
-        col.addView(section("FOLLOWER DETECTOR  ·  is something on you?"))
-        col.addView(sub("Run several sweeps over a few minutes (move around). Devices that keep reappearing near you are flagged as possible planted trackers."))
-        col.addView(button("ANALYZE FOLLOWERS") { followers() })
+        col.addView(section("SKAN RF  ·  trackery i obce nadajniki"))
+        col.addView(sub("Skanuje BLE + Wi-Fi i nazywa prawdopodobne trackery (AirTag / SmartTag / Tile) oraz podejrzanie bliskie nienazwane urządzenia."))
+        col.addView(button("SKANUJ RF") { rfSweep() })
 
-        col.addView(section("EMF · HIDDEN ELECTRONICS"))
-        col.addView(sub("Magnetic-field meter. Cameras, mics, speakers, motors and magnets disturb the field. Calibrate in open air, then sweep near objects."))
-        col.addView(button("CALIBRATE BASELINE") { magBaseline = magMag(); logln("# baseline = ${fmt(magBaseline)} µT", "#99aadd") })
-        col.addView(button("EMF SCAN (point at object)") { emfScan() })
+        col.addView(section("DETEKTOR ŚLEDZENIA  ·  czy coś jest na Tobie?"))
+        col.addView(sub("Zrób kilka skanów przez parę minut (ruszaj się). Urządzenia, które wciąż pojawiają się blisko Ciebie, oznaczane są jako możliwe podłożone trackery."))
+        col.addView(button("ANALIZUJ ŚLEDZĄCYCH") { followers() })
 
-        col.addView(section("ULTRASOUND LISTENER  ·  inaudible beacons"))
-        col.addView(sub("Detects 18–22 kHz energy you can't hear — used by covert tracking/ad beacons to ping nearby trackers."))
-        col.addView(button("LISTEN FOR ULTRASOUND") { ultrasound() })
+        col.addView(section("EMF  ·  UKRYTA ELEKTRONIKA"))
+        col.addView(sub("Miernik pola magnetycznego. Kamery, mikrofony, głośniki, silniki i magnesy zaburzają pole. Skalibruj w otwartej przestrzeni, potem przesuwaj przy obiektach."))
+        col.addView(button("KALIBRUJ ODNIESIENIE") { magBaseline = magMag(); logln("# baseline = ${fmt(magBaseline)} µT", "#99aadd") })
+        col.addView(button("SKAN EMF (przyłóż do obiektu)") { emfScan() })
 
-        col.addView(section("WALL MAP  ·  hidden wiring / cameras"))
-        col.addView(sub("Live magnetic map. Start it and slowly sweep the phone across a wall/object — peaks reveal concealed metal, wiring, motors, magnets."))
-        val wallBtn = button("WALL SCAN ▶ (live)") {}
+        col.addView(section("NASŁUCH ULTRADŹWIĘKÓW  ·  niesłyszalne beacony"))
+        col.addView(sub("Wykrywa energię 18–22 kHz, której nie słyszysz — używaną przez ukryte beacony śledzące/reklamowe."))
+        col.addView(button("NASŁUCHUJ ULTRADŹWIĘKÓW") { ultrasound() })
+
+        col.addView(section("MAPA ŚCIANY  ·  ukryte kable / kamery"))
+        col.addView(sub("Żywa mapa magnetyczna. Włącz i powoli przesuwaj telefon po ścianie/obiekcie — piki zdradzają ukryty metal, kable, silniki, magnesy."))
+        val wallBtn = button("SKAN ŚCIANY ▶ (na żywo)") {}
         wallBtn.setOnClickListener { try { toggleWall(wallBtn) } catch (e: Exception) { logln("err: ${e.message}", "#ee5555") } }
         col.addView(wallBtn)
         liveView = TextView(this).apply {
@@ -143,25 +163,25 @@ class MainActivity : Activity(), SensorEventListener {
         }
         col.addView(liveView)
 
-        col.addView(section("ULTRASONIC SONAR  ·  motion radar (world-first)"))
-        col.addView(sub("Emits an inaudible ~20 kHz tone and listens to its own echo. When anyone moves in the room, the Doppler shift gives them away — intrusion detection by sound you can't hear. Pair with ARM HONEY-SEAL to log motion."))
-        val sonarBtn = button("SONAR ▶ (ultrasonic motion)") {}
+        col.addView(section("SONAR ULTRADŹWIĘKOWY  ·  radar ruchu (pierwszy na świecie)"))
+        col.addView(sub("Emituje niesłyszalny ton ~20 kHz i nasłuchuje echa. Gdy ktoś poruszy się w pokoju, efekt Dopplera go zdradza — wykrywanie intruza dźwiękiem, którego nie słyszysz. Połącz z UZBRÓJ HONEY-SEAL, by logować ruch."))
+        val sonarBtn = button("SONAR ▶ (ruch)") {}
         sonarBtn.setOnClickListener { try { toggleSonar(sonarBtn) } catch (e: Exception) { logln("err: ${e.message}", "#ee5555") } }
         col.addView(sonarBtn)
 
-        col.addView(section("RF ROOM WATCH  ·  new transmitter alarm"))
-        col.addView(sub("Snapshot a room's radios, leave, come back — it tells you if a NEW transmitter appeared (someone switched on a bug or walked in with a device)."))
-        col.addView(button("SET ROOM BASELINE") { setRoomBaseline() })
-        col.addView(button("CHECK FOR NEW TRANSMITTERS") { checkRoomChange() })
+        col.addView(section("STRAŻ RF POKOJU  ·  alarm nowego nadajnika"))
+        col.addView(sub("Zrób radiowe zdjęcie pokoju, wyjdź, wróć — powie Ci, czy pojawił się NOWY nadajnik (włączona pluskwa lub ktoś wszedł z urządzeniem)."))
+        col.addView(button("ZAPISZ STAN POKOJU") { setRoomBaseline() })
+        col.addView(button("SPRAWDŹ NOWE NADAJNIKI") { checkRoomChange() })
 
-        col.addView(section("HONEY-SEAL  ·  tamper trap"))
-        col.addView(sub("Arm it and leave the phone. If anyone moves or picks it up while you're away, it seals a signed, timestamped tamper record you can prove later."))
-        col.addView(button("ARM HONEY-SEAL") { armSeal() })
-        col.addView(button("CHECK / DISARM") { checkSeal() })
+        col.addView(section("HONEY-SEAL  ·  pułapka na manipulację"))
+        col.addView(sub("Uzbrój i zostaw telefon. Jeśli ktoś go ruszy pod Twoją nieobecność, zapieczętuje podpisany, datowany dowód manipulacji."))
+        col.addView(button("UZBRÓJ HONEY-SEAL") { armSeal() })
+        col.addView(button("SPRAWDŹ / ROZBRÓJ") { checkSeal() })
 
-        col.addView(section("EVIDENCE LEDGER · TEE"))
-        col.addView(button("VERIFY EVIDENCE CHAIN") { verifyChain() })
-        col.addView(button("EXPORT findings.json") { exportLedger() })
+        col.addView(section("REJESTR DOWODÓW · TEE"))
+        col.addView(button("ZWERYFIKUJ ŁAŃCUCH") { verifyChain() })
+        col.addView(button("EKSPORTUJ DOWODY") { exportLedger() })
 
         col.addView(section("LOG"))
         log = TextView(this).apply {
@@ -214,7 +234,7 @@ class MainActivity : Activity(), SensorEventListener {
         sm?.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)?.let { sm?.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
         sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sm?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
     }
-    override fun onDestroy() { super.onDestroy(); sonarOn = false; try { sm?.unregisterListener(this) } catch (_: Exception) {} }
+    override fun onDestroy() { super.onDestroy(); sonarOn = false; analyzerOn = false; try { sm?.unregisterListener(this) } catch (_: Exception) {} }
     override fun onAccuracyChanged(s: Sensor?, a: Int) {}
     override fun onSensorChanged(e: SensorEvent) {
         when (e.sensor.type) {
@@ -389,8 +409,8 @@ class MainActivity : Activity(), SensorEventListener {
     }
     private fun toggleWall(b: Button) {
         liveMag = !liveMag
-        if (liveMag) { b.text = "WALL SCAN ◼ (stop)"; magRingFill = 0; magRingIdx = 0; handler.post(liveRunnable) }
-        else { b.text = "WALL SCAN ▶ (live)"; liveView.text = "—" }
+        if (liveMag) { b.text = "SKAN ŚCIANY ◼ (stop)"; magRingFill = 0; magRingIdx = 0; handler.post(liveRunnable) }
+        else { b.text = "SKAN ŚCIANY ▶ (na żywo)"; liveView.text = "—" }
     }
     private fun sparkline(): String {
         if (magRingFill == 0) return "........"
@@ -470,9 +490,105 @@ class MainActivity : Activity(), SensorEventListener {
         logln("# HONEY-SEAL ${if (tripped) "TRIPPED ⚠ — it was moved while you were away" else "intact ✓ — untouched"}", if (tripped) "#ee5555" else "#66cc66")
     }
 
+    // ── AUDIO SPECTRUM ANALYZER (live chart + "what's making sound") ──────────
+    inner class SpectrumView(ctx: Context) : View(ctx) {
+        @Volatile private var bars = FloatArray(64)
+        @Volatile private var caption = ""
+        private val pBar = Paint().apply { isAntiAlias = true }
+        private val pBg = Paint().apply { color = clr("#06090d") }
+        private val pTxt = Paint().apply { color = clr("#ddffff"); textSize = 30f; isAntiAlias = true }
+        fun update(b: FloatArray, cap: String) { bars = b; caption = cap; postInvalidate() }
+        override fun onDraw(c: Canvas) {
+            val w = width.toFloat(); val h = height.toFloat()
+            c.drawRect(0f, 0f, w, h, pBg)
+            val n = bars.size; if (n == 0) return
+            val bw = w / n
+            for (i in 0 until n) {
+                val v = bars[i].coerceIn(0f, 1f)
+                pBar.color = clr(if (i > n * 0.82) "#ee5555" else if (i > n * 0.6) "#66ccff" else "#55cc88")
+                c.drawRect(i * bw + 1f, h * (1f - v), (i + 1) * bw - 1f, h, pBar)
+            }
+            if (caption.isNotEmpty()) c.drawText(caption, 16f, 38f, pTxt)
+        }
+    }
+
+    private fun toggleAnalyzer(b: Button) {
+        if (analyzerOn) { analyzerOn = false; b.text = "ANALIZUJ ▶ (mikrofon)"; return }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            logln("przyznaj dostęp do mikrofonu i spróbuj ponownie", "#ddcc66"); requestPerms(); return
+        }
+        analyzerOn = true; b.text = "ANALIZUJ ◼ (stop)"
+        Thread { analyzeLoop() }.start()
+    }
+    private fun analyzeLoop() {
+        val rate = 44100; val n = 4096; val nb = 64
+        var rec: AudioRecord? = null
+        try {
+            val rmin = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            rec = AudioRecord(MediaRecorder.AudioSource.MIC, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(rmin, n * 4))
+            rec.startRecording()
+            val buf = ShortArray(n); val re = DoubleArray(n); val im = DoubleArray(n)
+            val half = n / 2
+            while (analyzerOn) {
+                var off = 0; while (off < n) { val r = rec.read(buf, off, n - off); if (r <= 0) break; off += r }
+                for (i in 0 until n) { val w = 0.5 - 0.5 * Math.cos(2.0 * Math.PI * i / (n - 1)); re[i] = buf[i] * w; im[i] = 0.0 }
+                fft(re, im)
+                val mags = DoubleArray(half) { Math.sqrt(re[it] * re[it] + im[it] * im[it]) }
+                // log-spaced bars for the chart
+                val bars = FloatArray(nb)
+                for (bi in 0 until nb) {
+                    val lo = Math.pow(half.toDouble(), bi.toDouble() / nb).toInt().coerceIn(1, half - 1)
+                    val hi = Math.pow(half.toDouble(), (bi + 1.0) / nb).toInt().coerceIn(lo + 1, half)
+                    var s = 0.0; for (k in lo until hi) if (mags[k] > s) s = mags[k]
+                    bars[bi] = s.toFloat()
+                }
+                val mx = bars.maxOrNull() ?: 1f
+                val norm = FloatArray(nb) { if (mx > 0f) Math.log10(1.0 + 9.0 * bars[it] / mx).toFloat() else 0f }
+                var peakBin = 1; for (k in 2 until half) if (mags[k] > mags[peakBin]) peakBin = k
+                val peakHz = peakBin * rate / n
+                val labels = classifySound(mags, rate, n)
+                runOnUiThread {
+                    spectrum.update(norm, "$peakHz Hz${if (peakHz >= 18000) "  ⚠ ultradźwięk" else ""}")
+                    soundList.text = labels.joinToString("\n")
+                }
+            }
+        } catch (e: Exception) { runOnUiThread { logln("audio: ${e.message}", "#ee5555") } }
+        finally { try { rec?.stop(); rec?.release() } catch (_: Exception) {}; runOnUiThread { soundList.text = "—" } }
+    }
+    /** Find dominant peaks per band and name a likely source (Polish). */
+    private fun classifySound(mags: DoubleArray, rate: Int, n: Int): List<String> {
+        val half = mags.size
+        var sum = 0.0; var gmax = 1e-9
+        for (k in 2 until half) { sum += mags[k]; if (mags[k] > gmax) gmax = mags[k] }
+        val avg = sum / half
+        val bands = listOf(
+            Triple(20, 120, "szum niski / sieć 50 Hz / zasilacz"),
+            Triple(120, 300, "hum / wentylator / silnik"),
+            Triple(300, 1000, "niskie dźwięki / urządzenie"),
+            Triple(1000, 3000, "mowa / głos"),
+            Triple(3000, 6000, "wysoki głos / piski"),
+            Triple(6000, 10000, "gwizd / sybilanty / elektronika"),
+            Triple(10000, 15000, "wysoki pisk / brzęczyk"),
+            Triple(15000, 18000, "bardzo wysoki ton (komary / elektronika)"),
+            Triple(18000, 22050, "ULTRADŹWIĘK — beacon / pilot / czujnik")
+        )
+        val out = ArrayList<String>()
+        for ((lo, hi, label) in bands) {
+            val loBin = (lo * n / rate).coerceIn(1, half - 1); val hiBin = (hi * n / rate).coerceIn(loBin + 1, half)
+            var peak = 0.0; var pb = loBin
+            for (k in loBin until hiBin) if (mags[k] > peak) { peak = mags[k]; pb = k }
+            if (peak > gmax * 0.22 && peak > avg * 5) {
+                val hz = pb * rate / n
+                out.add("• ${hz} Hz — $label${if (lo >= 18000) " ⚠" else ""}")
+            }
+        }
+        if (out.isEmpty()) out.add("cisza / brak wyraźnych źródeł")
+        return out
+    }
+
     // ── ULTRASONIC SONAR (Doppler motion radar) ──────────────────────────────
     private fun toggleSonar(b: Button) {
-        if (sonarOn) { sonarOn = false; b.text = "SONAR ▶ (ultrasonic motion)"; return }
+        if (sonarOn) { sonarOn = false; b.text = "SONAR ▶ (ruch)"; return }
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             logln("grant microphone permission, then retry", "#ddcc66"); requestPerms(); return
         }
