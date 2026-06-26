@@ -1,0 +1,24 @@
+{
+  "name": "aegis",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Aegis — Zero-Trust Autonomous Evolution. AI may write its own hardware skills, but the physical world refuses to execute them without an independently re-verified Proof-of-Thought.",
+  "scripts": {
+    "demo": "node --experimental-strip-types src/demo/run.ts",
+    "demo:market": "node --experimental-strip-types src/demo/market.ts",
+    "demo:keyless": "node --experimental-strip-types src/demo/keyless.ts",
+    "demo:witness": "node --experimental-strip-types src/demo/witness.ts",
+    "demo:condition": "node --experimental-strip-types src/demo/condition.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.6"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "esbuild": "^0.28.1",
+    "postject": "^1.0.0-alpha.6",
+    "typescript": "^5.9.3"
+  }
+}

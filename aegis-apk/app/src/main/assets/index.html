@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Aegis Sentinel</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; background: #0b0f14; color: #cfe; font-family: -apple-system, Roboto, system-ui, sans-serif; }
+  header { padding: 18px 16px 8px; }
+  h1 { margin: 0; font-size: 20px; letter-spacing: 3px; color: #dff; }
+  .sub { color: #7a8; font-size: 12px; margin-top: 4px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px 16px; }
+  button { appearance: none; border: 1px solid #27506e; background: #15314a; color: #dff;
+           border-radius: 12px; padding: 14px 10px; font-size: 15px; font-weight: 700; letter-spacing: .5px; }
+  button:active { background: #1d4660; }
+  button .h { display:block; font-size: 11px; font-weight: 500; color: #8aa; margin-top: 4px; letter-spacing: 0; }
+  button.all { grid-column: 1 / 3; background: #14323f; border-color: #2a6; }
+  #log { margin: 4px 16px 24px; background: #06090d; border-radius: 10px; padding: 12px;
+         font-family: ui-monospace, "Roboto Mono", monospace; font-size: 12.5px; line-height: 1.5;
+         white-space: pre-wrap; min-height: 220px; border: 1px solid #16202b; }
+  .ok { color: #6c6; } .blk { color: #e55; } .inf { color: #9ad; } .warn { color: #dc6; }
+  .hdr { color: #cfe; font-weight: 700; }
+  footer { color: #4a5560; font-size: 11px; text-align: center; padding: 0 16px 26px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AEGIS&nbsp;SENTINEL</h1>
+  <div class="sub">Zero-trust cyber-physical toolkit · on-device, offline · WebCrypto</div>
+</header>
+
+<div class="grid">
+  <button onclick="run('shield')">SHIELD<span class="h">re-sim + envelope</span></button>
+  <button onclick="run('keyless')">KEYLESS<span class="h">proof per op, no replay</span></button>
+  <button onclick="run('witness')">WITNESS<span class="h">challenge, not capture</span></button>
+  <button onclick="run('condition')">LEDGER<span class="h">proven stress, not date</span></button>
+  <button class="all" onclick="run('all')">RUN ALL</button>
+</div>
+
+<div id="log">Tap a module to run it on-device. Nothing leaves the phone.</div>
+<footer>Aegis · the phone is the last, unbribable judge</footer>
+
+<script>
+const L = document.getElementById('log');
+function clr(){ L.textContent=''; }
+function p(t, cls){ const s=document.createElement('span'); if(cls)s.className=cls; s.textContent=t+'\n'; L.appendChild(s); }
+const enc = new TextEncoder();
+function sortDeep(v){ if(Array.isArray(v))return v.map(sortDeep);
+  if(v&&typeof v==='object'){const o={};for(const k of Object.keys(v).sort())o[k]=sortDeep(v[k]);return o;} return v; }
+async function sha256hex(s){ const b=await crypto.subtle.digest('SHA-256', enc.encode(s));
+  return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join(''); }
+async function hashOf(o){ return sha256hex(JSON.stringify(sortDeep(o))); }
+function rndHex(n){ const a=new Uint8Array(n); crypto.getRandomValues(a);
+  return [...a].map(x=>x.toString(16).padStart(2,'0')).join(''); }
+async function hmac(keyHex, msg){
+  const key = await crypto.subtle.importKey('raw', hexBytes(keyHex), {name:'HMAC',hash:'SHA-256'}, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(msg));
+  return [...new Uint8Array(sig)].map(x=>x.toString(16).padStart(2,'0')).join(''); }
+function hexBytes(h){ const a=new Uint8Array(h.length/2); for(let i=0;i<a.length;i++)a[i]=parseInt(h.substr(i*2,2),16); return a; }
+
+// ── trusted physics simulator (mirrors aegis/src/sim/physics.ts) ──
+function simulate(ops){
+  let v=0,temp=25,cur=1,energy=0; const trace=[],ttrace=[]; const dt=0.01;
+  const step=x=>{ v=x; const pw=Math.max(0,v)*cur; energy+=pw*dt; temp+=pw*0.012-(temp-25)*0.05; trace.push(+v.toFixed(4)); ttrace.push(+temp.toFixed(4)); };
+  for(const o of ops){ if(o.op==='SET_CURRENT_LIMIT')cur=o.amps;
+    else if(o.op==='SET_VOLTAGE')step(o.volts);
+    else if(o.op==='RAMP'){const n=Math.max(1,Math.ceil(o.ms/10)),s=v;for(let i=1;i<=n;i++)step(s+(o.toVolts-s)*i/n);}
+    else if(o.op==='HOLD'){const n=Math.max(1,Math.ceil(o.ms/10));for(let i=0;i<n;i++)step(v);} }
+  const peak=trace.length?Math.max(...trace):0;
+  return {peakVolts:+peak.toFixed(4), energyJ:+energy.toFixed(4), peakTempC:+Math.max(25,...ttrace).toFixed(4),
+          durationMs:trace.length*10, samples:trace.length, tempTrace:ttrace};
+}
+const ENV={maxVolts:13.2,maxTempC:95,maxCurrentA:8};
+const safe=[{op:'SET_CURRENT_LIMIT',amps:5},{op:'RAMP',toVolts:12.6,ms:100},{op:'HOLD',ms:200}];
+const over=[{op:'SET_CURRENT_LIMIT',amps:5},{op:'RAMP',toVolts:14.8,ms:100},{op:'HOLD',ms:200}];
+
+// ── modules ──
+async function mShield(){
+  p('# SHIELD — re-simulate + envelope','hdr');
+  for(const [name,ops] of [['safe 12.6V',safe],['over 14.8V',over]]){
+    const s=simulate(ops);
+    const ok = s.peakVolts<=ENV.maxVolts;
+    p('  '+name+' -> peak '+s.peakVolts+'V -> '+(ok?'OK':'ENVELOPE_VIOLATION'), ok?'ok':'blk');
+  }
+}
+async function mKeyless(){
+  p('# KEYLESS — per-operation proof, replay is dead','hdr');
+  const key=rndHex(32); // device TEE key (HMAC stands in for ed25519/TEE here)
+  const consumed=new Set();
+  const codeHash=await hashOf(safe);
+  async function authorize(nonce){
+    if(consumed.has(nonce)) return 'REPLAY (nonce already used)';
+    const proof=await hmac(key, nonce+'|'+codeHash);
+    const expect=await hmac(key, nonce+'|'+codeHash);
+    if(proof!==expect) return 'BAD_PROOF';
+    consumed.add(nonce); return 'AUTHORIZED';
+  }
+  const n1=rndHex(16);
+  p('  legit op    -> '+await authorize(n1), 'ok');
+  p('  replay same -> '+await authorize(n1), 'blk');
+}
+async function mWitness(){
+  p('# WITNESS — challenge a device; replay of a captured signal fails','hdr');
+  const shared=rndHex(32); // genuine device shared key
+  const consumed=new Set();
+  async function deviceAnswer(nonce){ return hmac(shared, nonce); } // genuine device
+  async function verify(nonce, resp){
+    if(consumed.has(nonce)) return 'REPLAY';
+    if(resp!==await hmac(shared,nonce)) return 'BAD_RESPONSE/NONCE_MISMATCH';
+    consumed.add(nonce); return 'VERIFIED';
+  }
+  const c1=rndHex(32); const good=await deviceAnswer(c1);
+  p('  live challenge  -> '+await verify(c1, good), 'ok');
+  const c2=rndHex(32); // a fresh challenge; attacker replays the OLD captured answer
+  p('  replay captured -> '+await verify(c2, good)+'  (fresh nonce ≠ captured)', 'blk');
+}
+async function mCondition(){
+  p('# LEDGER — health from proven stress, not the calendar','hdr');
+  const envL={maxEnergy:19000,maxCycles:1000};
+  function deriveStress(ops){ const s=simulate(ops); return {energyJ:s.energyJ}; }
+  async function run(ops,count){
+    let cumE=0,head='GENESIS',ok=true; const sample=deriveStress(ops);
+    for(let i=0;i<count;i++){ cumE+=sample.energyJ;
+      head=await sha256hex(head+'|'+cumE); }
+    const frac=Math.max(cumE/envL.maxEnergy, count/envL.maxCycles);
+    return {health: frac>=0.9?'RETIRE':frac>=0.7?'DEGRADED':'HEALTHY', frac:+(frac*100).toFixed(1), head};
+  }
+  const cal=(n,lim)=>n>=lim?'REPLACE':'KEEP';
+  const a=await run(safe,300);
+  p('  300 gentle  : calendar='+cal(300,200)+'  witnessed='+a.health+' ('+a.frac+'%)', a.health==='HEALTHY'?'ok':'warn');
+  const b=await run(over.map(o=>o.op==='RAMP'?{op:'RAMP',toVolts:13.0,ms:1000}:(o.op==='SET_CURRENT_LIMIT'?{op:'SET_CURRENT_LIMIT',amps:8}:o)),180);
+  p('  180 abusive : calendar='+cal(180,200)+'  witnessed='+b.health+' ('+b.frac+'%)', b.health==='RETIRE'?'blk':'warn');
+}
+
+async function run(which){
+  clr();
+  try{
+    if(which==='all'){ await mShield(); p(''); await mKeyless(); p(''); await mWitness(); p(''); await mCondition(); }
+    else if(which==='shield') await mShield();
+    else if(which==='keyless') await mKeyless();
+    else if(which==='witness') await mWitness();
+    else if(which==='condition') await mCondition();
+    p(''); p('done.', 'inf');
+  }catch(e){ p('error: '+e.message,'blk'); }
+}
+</script>
+</body>
+</html>

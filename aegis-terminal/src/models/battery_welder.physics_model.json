@@ -1,0 +1,34 @@
+{
+  "schema": "aegis.physics_model/1",
+  "deviceId": "welder.pulse.0",
+  "displayName": "18650 Battery Spot Welder",
+  "envelope": {
+    "rail": "welder.pulse.0",
+    "maxVolts": 5,
+    "maxTempC": 120,
+    "maxCurrentA": 2000
+  },
+  "thermal": {
+    "dtMs": 5,
+    "ambientC": 25,
+    "thermalGain": 0.0006,
+    "coolingRate": 0.02,
+    "degradationTempC": 80
+  },
+  "instructionSet": [
+    "SET_CURRENT_LIMIT",
+    "RAMP",
+    "HOLD"
+  ],
+  "bus": {
+    "transport": "elm327",
+    "baud": 38400,
+    "framing": "aegis-frame/1"
+  },
+  "signature": {
+    "alg": "ed25519",
+    "publisher": "acme-robotics",
+    "publicKeyHex": "ca3c7017cb92237f339e4e11b1d8d38cd9ea96c026a022acdd9b8dc8fc288593",
+    "sigHex": "61875416ef5cfcd1459b6872d0fafe4c3e52eb4f0442981b5e048426ed8b35f55f20702be638964d244c8b736edebb0ac8519ee1a8ee75b28f1763445fbda40e"
+  }
+}
